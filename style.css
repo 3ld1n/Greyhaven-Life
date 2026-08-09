@@ -1,0 +1,1434 @@
+/* =========================================================
+   Greyhaven Life v1.0.0
+   Per-chat RP clock, locations, schedules, and continuity HUD
+   ========================================================= */
+
+:root {
+    --gh-life-bg: #111317;
+    --gh-life-panel: #191c21;
+    --gh-life-panel-2: #21252c;
+    --gh-life-panel-3: #292e36;
+    --gh-life-border: rgba(255, 255, 255, 0.095);
+    --gh-life-border-strong: rgba(255, 255, 255, 0.16);
+    --gh-life-text: rgba(255, 255, 255, 0.94);
+    --gh-life-muted: rgba(255, 255, 255, 0.55);
+    --gh-life-faint: rgba(255, 255, 255, 0.36);
+    --gh-life-accent: #66c2b5;
+    --gh-life-accent-soft: rgba(102, 194, 181, 0.14);
+    --gh-life-danger: #f08484;
+    --gh-life-shadow: 0 26px 80px rgba(0, 0, 0, 0.62);
+}
+
+/* ---------------------------------------------------------
+   Extension menu item
+   --------------------------------------------------------- */
+
+#gh-life-menu-entry {
+    cursor: pointer;
+}
+
+#gh-life-menu-entry i {
+    width: 1.4em;
+    text-align: center;
+}
+
+/* ---------------------------------------------------------
+   Floating HUD
+   --------------------------------------------------------- */
+
+#gh-life-hud {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 62px);
+    right: 11px;
+
+    max-width: min(58vw, 240px);
+    height: 31px;
+
+    margin: 0;
+    padding: 0 10px 0 8px;
+
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 999px;
+
+    background: rgba(22, 25, 29, 0.92);
+    color: var(--gh-life-text);
+
+    box-shadow: 0 7px 20px rgba(0, 0, 0, 0.30);
+
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+
+    transform: translateY(-4px) scale(0.96);
+    transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+
+    z-index: 3850;
+
+    -webkit-tap-highlight-color: transparent;
+}
+
+#gh-life-hud.gh-life-hud-visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+
+    transform: translateY(0) scale(1);
+}
+
+#gh-life-hud .gh-life-hud-icon {
+    width: 18px;
+    height: 18px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    color: var(--gh-life-accent);
+    font-size: 12px;
+}
+
+#gh-life-hud .gh-life-hud-time {
+    flex: 0 0 auto;
+
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 750;
+    letter-spacing: 0.15px;
+}
+
+#gh-life-hud .gh-life-hud-scene {
+    min-width: 0;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+body.em-top-menu-open #gh-life-hud,
+body.em-panel-open #gh-life-hud,
+body.em-tools-open #gh-life-hud {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+/* ---------------------------------------------------------
+   Main native dialog — reliable on iOS/Safari
+   --------------------------------------------------------- */
+
+dialog#gh-life-dialog,
+dialog#gh-life-person-dialog,
+dialog#gh-life-schedule-dialog {
+    position: fixed !important;
+    inset: 0 !important;
+
+    margin: auto !important;
+    padding: 0 !important;
+
+    border: 1px solid var(--gh-life-border-strong) !important;
+    border-radius: 24px !important;
+    outline: none !important;
+
+    background: var(--gh-life-bg) !important;
+    color: var(--gh-life-text) !important;
+
+    box-shadow: var(--gh-life-shadow) !important;
+
+    z-index: 2147483647 !important;
+}
+
+dialog#gh-life-dialog {
+    width: min(760px, calc(100vw - 20px)) !important;
+    max-width: calc(100vw - 20px) !important;
+
+    height: min(88dvh, 860px) !important;
+    max-height: min(88dvh, 860px) !important;
+
+    overflow: hidden !important;
+}
+
+dialog#gh-life-person-dialog,
+dialog#gh-life-schedule-dialog {
+    width: min(620px, calc(100vw - 24px)) !important;
+    max-width: calc(100vw - 24px) !important;
+
+    max-height: min(84dvh, 760px) !important;
+
+    overflow: hidden !important;
+}
+
+dialog#gh-life-dialog::backdrop,
+dialog#gh-life-person-dialog::backdrop,
+dialog#gh-life-schedule-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.74) !important;
+
+    backdrop-filter: blur(6px) !important;
+    -webkit-backdrop-filter: blur(6px) !important;
+}
+
+.gh-life-dialog-shell {
+    width: 100%;
+    height: 100%;
+
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr);
+
+    overflow: hidden;
+
+    background: var(--gh-life-bg);
+}
+
+.gh-life-dialog-header {
+    min-height: 64px;
+
+    padding: 10px 12px 10px 13px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+
+    border-bottom: 1px solid var(--gh-life-border);
+
+    background: #15181d;
+}
+
+.gh-life-dialog-brand {
+    min-width: 0;
+
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.gh-life-dialog-icon {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: 1px solid rgba(102, 194, 181, 0.22);
+    border-radius: 13px;
+
+    background: var(--gh-life-accent-soft);
+    color: var(--gh-life-accent);
+
+    font-size: 17px;
+}
+
+.gh-life-dialog-title {
+    color: var(--gh-life-text);
+
+    font-size: 17px;
+    line-height: 1.15;
+    font-weight: 780;
+}
+
+.gh-life-dialog-subtitle {
+    max-width: 68vw;
+
+    margin-top: 3px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1.15;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gh-life-dialog-close {
+    width: 38px !important;
+    height: 38px !important;
+    min-width: 38px !important;
+
+    margin: 0 !important;
+    padding: 0 0 2px !important;
+
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 12px !important;
+
+    background: rgba(255, 255, 255, 0.035) !important;
+    color: rgba(255, 255, 255, 0.80) !important;
+
+    font-size: 27px !important;
+    line-height: 1 !important;
+    font-weight: 300 !important;
+}
+
+.gh-life-tabs {
+    min-height: 49px;
+
+    padding: 5px 7px;
+
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    overflow-x: auto;
+
+    border-bottom: 1px solid var(--gh-life-border);
+
+    background: #15181d;
+
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.gh-life-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.gh-life-tab {
+    flex: 1 0 auto;
+    min-width: 67px;
+    height: 38px;
+
+    margin: 0 !important;
+    padding: 0 9px !important;
+
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+
+    border: 1px solid transparent !important;
+    border-radius: 11px !important;
+
+    background: transparent !important;
+    color: var(--gh-life-muted) !important;
+
+    font-size: 11px !important;
+    font-weight: 650 !important;
+}
+
+.gh-life-tab i {
+    font-size: 12px;
+}
+
+.gh-life-tab.active {
+    border-color: rgba(102, 194, 181, 0.18) !important;
+    background: var(--gh-life-accent-soft) !important;
+    color: var(--gh-life-text) !important;
+}
+
+.gh-life-dialog-body {
+    min-height: 0;
+
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+
+    padding: 10px;
+
+    background: var(--gh-life-bg);
+}
+
+/* ---------------------------------------------------------
+   Shared content
+   --------------------------------------------------------- */
+
+.gh-life-section {
+    padding: 13px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 18px;
+
+    background: var(--gh-life-panel);
+}
+
+.gh-life-section + .gh-life-section {
+    margin-top: 10px;
+}
+
+.gh-life-section-heading {
+    margin-bottom: 10px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.gh-life-section-title {
+    color: var(--gh-life-text);
+
+    font-size: 14px;
+    line-height: 1.2;
+    font-weight: 750;
+}
+
+.gh-life-section-subtitle {
+    margin-top: 3px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.gh-life-eyebrow,
+.gh-life-field-label {
+    display: block;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1.2;
+    font-weight: 650;
+
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+}
+
+.gh-life-primary {
+    border-color: rgba(102, 194, 181, 0.28) !important;
+    background: rgba(102, 194, 181, 0.15) !important;
+    color: #dff8f4 !important;
+}
+
+.gh-life-small-button,
+.gh-life-action-row button,
+.gh-life-quick-time button,
+.gh-life-chip-presets button,
+.gh-life-person-actions button,
+.gh-life-schedule-actions button,
+.gh-life-add-person-grid > button,
+.gh-life-inline-control > button,
+.gh-life-section > button {
+    min-height: 34px;
+
+    margin: 0 !important;
+    padding: 6px 10px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 10px !important;
+
+    background: rgba(255, 255, 255, 0.035) !important;
+    color: rgba(255, 255, 255, 0.84) !important;
+
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+}
+
+.gh-life-small-button.active,
+.gh-life-person-actions button.active {
+    border-color: rgba(102, 194, 181, 0.28) !important;
+    background: var(--gh-life-accent-soft) !important;
+    color: #dff8f4 !important;
+}
+
+.gh-life-danger-text {
+    color: var(--gh-life-danger) !important;
+}
+
+.gh-life-icon-button {
+    width: 39px !important;
+    height: 39px !important;
+    min-width: 39px !important;
+
+    margin: 0 !important;
+    padding: 0 !important;
+
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 12px !important;
+
+    background: rgba(255, 255, 255, 0.035) !important;
+    color: var(--gh-life-accent) !important;
+}
+
+/* ---------------------------------------------------------
+   Clock / time
+   --------------------------------------------------------- */
+
+.gh-life-clock-card {
+    padding: 2px;
+}
+
+.gh-life-clock-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+}
+
+.gh-life-big-time {
+    margin-top: 2px;
+
+    color: var(--gh-life-text);
+
+    font-size: clamp(34px, 11vw, 48px);
+    line-height: 1;
+    font-weight: 790;
+    letter-spacing: -1.8px;
+}
+
+.gh-life-date {
+    margin-top: 6px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 11px;
+}
+
+.gh-life-quick-time {
+    margin-top: 12px;
+
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    overflow-x: auto;
+
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.gh-life-quick-time::-webkit-scrollbar {
+    display: none;
+}
+
+.gh-life-quick-time button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.gh-life-quick-time-large {
+    flex-wrap: wrap;
+    overflow: visible;
+}
+
+.gh-life-time-display {
+    margin-top: 10px;
+    padding: 14px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 14px;
+
+    background: var(--gh-life-panel-2);
+}
+
+.gh-life-time-display > div {
+    font-size: 18px;
+    line-height: 1.3;
+    font-weight: 720;
+}
+
+.gh-life-time-display > span {
+    display: block;
+
+    margin-top: 5px;
+
+    color: var(--gh-life-accent);
+
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.gh-life-mode-grid {
+    margin-top: 10px;
+
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+}
+
+.gh-life-mode-grid button {
+    min-width: 0;
+    min-height: 96px;
+
+    margin: 0 !important;
+    padding: 10px 8px !important;
+
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 5px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 14px !important;
+
+    background: rgba(255, 255, 255, 0.025) !important;
+    color: var(--gh-life-text) !important;
+
+    text-align: left !important;
+}
+
+.gh-life-mode-grid button.active {
+    border-color: rgba(102, 194, 181, 0.32) !important;
+    background: var(--gh-life-accent-soft) !important;
+}
+
+.gh-life-mode-grid button i {
+    color: var(--gh-life-accent);
+    font-size: 15px;
+}
+
+.gh-life-mode-grid button strong {
+    font-size: 12px;
+}
+
+.gh-life-mode-grid button span {
+    color: var(--gh-life-muted);
+    font-size: 9px;
+    line-height: 1.35;
+}
+
+.gh-life-inline-control {
+    margin: 10px 0;
+
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.gh-life-inline-control label {
+    flex: 1 1 auto;
+
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gh-life-inline-control input {
+    flex: 1 1 auto;
+}
+
+/* ---------------------------------------------------------
+   Forms
+   --------------------------------------------------------- */
+
+.gh-life-form-grid {
+    margin-top: 10px;
+
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+}
+
+.gh-life-form-grid label,
+.gh-life-add-person-grid label,
+.gh-life-setting-row-stack {
+    min-width: 0;
+}
+
+.gh-life-form-grid label > span,
+.gh-life-add-person-grid label > span,
+.gh-life-setting-row-stack > span:first-child {
+    display: block;
+
+    margin-bottom: 5px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.gh-life-form-grid input,
+.gh-life-form-grid textarea,
+.gh-life-form-grid select,
+.gh-life-add-person-grid input,
+.gh-life-add-person-grid select,
+.gh-life-inline-control input,
+.gh-life-setting-row select,
+.gh-life-setting-row input[type="number"] {
+    box-sizing: border-box !important;
+
+    width: 100% !important;
+    min-height: 38px !important;
+
+    margin: 0 !important;
+    padding: 8px 9px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 10px !important;
+    outline: none !important;
+
+    background: #111419 !important;
+    color: var(--gh-life-text) !important;
+
+    font-size: 13px !important;
+    line-height: 1.25 !important;
+}
+
+.gh-life-form-grid textarea {
+    min-height: 56px !important;
+    resize: vertical;
+}
+
+.gh-life-form-grid input:focus,
+.gh-life-form-grid textarea:focus,
+.gh-life-form-grid select:focus,
+.gh-life-add-person-grid input:focus,
+.gh-life-add-person-grid select:focus {
+    border-color: rgba(102, 194, 181, 0.42) !important;
+}
+
+.gh-life-form-grid small,
+.gh-life-add-person-grid small {
+    display: block;
+
+    margin-top: 4px;
+
+    color: var(--gh-life-faint);
+
+    font-size: 9px;
+    line-height: 1.3;
+}
+
+.gh-life-span-2 {
+    grid-column: 1 / -1;
+}
+
+.gh-life-action-row {
+    margin-top: 10px;
+
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+/* ---------------------------------------------------------
+   Person cards / Where is everyone
+   --------------------------------------------------------- */
+
+.gh-life-person-list,
+.gh-life-person-manage-list,
+.gh-life-schedule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.gh-life-person-card {
+    width: 100%;
+    min-height: 62px;
+
+    margin: 0 !important;
+    padding: 8px !important;
+
+    display: flex !important;
+    align-items: center !important;
+    gap: 9px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 14px !important;
+
+    background: rgba(255, 255, 255, 0.025) !important;
+    color: var(--gh-life-text) !important;
+
+    text-align: left !important;
+}
+
+.gh-life-avatar {
+    width: 43px !important;
+    height: 43px !important;
+    min-width: 43px !important;
+
+    display: block !important;
+
+    border: 1px solid rgba(255, 255, 255, 0.10) !important;
+    border-radius: 50% !important;
+
+    object-fit: cover !important;
+    object-position: center top !important;
+
+    background: #242830 !important;
+}
+
+.gh-life-avatar-fallback {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+
+    color: var(--gh-life-muted);
+
+    font-size: 15px;
+}
+
+.gh-life-person-main {
+    min-width: 0;
+    flex: 1 1 auto;
+
+    display: flex;
+    flex-direction: column;
+}
+
+.gh-life-person-name {
+    color: var(--gh-life-text);
+
+    font-size: 13px;
+    line-height: 1.2;
+    font-weight: 720;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gh-life-person-line {
+    margin-top: 3px;
+
+    color: rgba(255, 255, 255, 0.70);
+
+    font-size: 11px;
+    line-height: 1.2;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gh-life-person-meta {
+    margin-top: 3px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+    line-height: 1.25;
+
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gh-life-availability {
+    flex: 0 0 auto;
+
+    padding: 5px 7px;
+
+    border-radius: 999px;
+
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 680;
+}
+
+.gh-life-availability-available {
+    background: rgba(93, 200, 130, 0.13);
+    color: #9be3b4;
+}
+
+.gh-life-availability-limited {
+    background: rgba(231, 186, 91, 0.13);
+    color: #e7c675;
+}
+
+.gh-life-availability-busy {
+    background: rgba(235, 139, 92, 0.13);
+    color: #f0ad86;
+}
+
+.gh-life-availability-unavailable {
+    background: rgba(230, 96, 96, 0.13);
+    color: #ef9a9a;
+}
+
+.gh-life-availability-sleeping {
+    background: rgba(139, 124, 216, 0.14);
+    color: #bcb0f2;
+}
+
+.gh-life-availability-unknown {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--gh-life-muted);
+}
+
+.gh-life-manage-person {
+    padding: 9px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 15px;
+
+    background: rgba(255, 255, 255, 0.024);
+}
+
+.gh-life-manage-person-top {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.gh-life-person-actions {
+    margin-top: 8px;
+
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.gh-life-add-person-grid {
+    margin-top: 10px;
+
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+}
+
+/* ---------------------------------------------------------
+   Schedule cards
+   --------------------------------------------------------- */
+
+.gh-life-schedule-person + .gh-life-schedule-person {
+    margin-top: 16px;
+    padding-top: 16px;
+
+    border-top: 1px solid var(--gh-life-border);
+}
+
+.gh-life-schedule-person-heading {
+    min-width: 0;
+
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gh-life-schedule-person-heading .gh-life-avatar {
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+}
+
+.gh-life-schedule-card {
+    padding: 9px;
+
+    display: flex;
+    align-items: center;
+    gap: 9px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 13px;
+
+    background: rgba(255, 255, 255, 0.024);
+}
+
+.gh-life-schedule-card-main {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.gh-life-schedule-title {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.gh-life-schedule-time {
+    margin-top: 3px;
+
+    color: var(--gh-life-accent);
+
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.gh-life-schedule-meta {
+    margin-top: 4px;
+
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px 9px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+}
+
+.gh-life-schedule-actions {
+    flex: 0 0 auto;
+
+    display: flex;
+    gap: 5px;
+}
+
+/* ---------------------------------------------------------
+   Settings
+   --------------------------------------------------------- */
+
+.gh-life-setting-row {
+    min-height: 53px;
+
+    padding: 8px 0;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+
+    border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.gh-life-setting-row:last-of-type {
+    border-bottom: 0;
+}
+
+.gh-life-setting-row > span {
+    min-width: 0;
+    flex: 1 1 auto;
+
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.gh-life-setting-row strong {
+    font-size: 11px;
+}
+
+.gh-life-setting-row small {
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+    line-height: 1.35;
+}
+
+.gh-life-setting-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+
+    accent-color: var(--gh-life-accent);
+}
+
+.gh-life-setting-row-stack {
+    align-items: stretch;
+    flex-direction: column;
+}
+
+.gh-life-toggle-row {
+    margin-top: 9px;
+}
+
+.gh-life-switch-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    color: rgba(255, 255, 255, 0.78);
+
+    font-size: 11px;
+}
+
+.gh-life-switch-label input {
+    width: 17px;
+    height: 17px;
+
+    accent-color: var(--gh-life-accent);
+}
+
+.gh-life-switch-label-inline {
+    flex: 0 0 auto;
+}
+
+/* ---------------------------------------------------------
+   Subdialogs
+   --------------------------------------------------------- */
+
+.gh-life-subdialog {
+    width: 100%;
+    max-height: min(84dvh, 760px);
+
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+
+    overflow: hidden;
+
+    background: var(--gh-life-bg);
+}
+
+.gh-life-subdialog-header {
+    min-height: 59px;
+
+    padding: 10px 11px 10px 13px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    border-bottom: 1px solid var(--gh-life-border);
+
+    background: #15181d;
+}
+
+.gh-life-subdialog-header > div {
+    min-width: 0;
+
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.gh-life-subdialog-header strong {
+    font-size: 15px;
+}
+
+.gh-life-subdialog-header span {
+    color: var(--gh-life-muted);
+    font-size: 10px;
+}
+
+.gh-life-subdialog-person {
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 9px !important;
+}
+
+.gh-life-subdialog-body {
+    min-height: 0;
+
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+
+    padding: 11px;
+}
+
+.gh-life-subdialog-body section + section {
+    margin-top: 17px;
+    padding-top: 15px;
+
+    border-top: 1px solid var(--gh-life-border);
+}
+
+.gh-life-subdialog-footer {
+    padding: 9px 11px max(9px, env(safe-area-inset-bottom));
+
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 7px;
+
+    border-top: 1px solid var(--gh-life-border);
+
+    background: #15181d;
+}
+
+.gh-life-subdialog-footer button {
+    min-height: 36px;
+
+    margin: 0 !important;
+    padding: 7px 11px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 10px !important;
+
+    background: rgba(255, 255, 255, 0.035) !important;
+    color: rgba(255, 255, 255, 0.84) !important;
+
+    font-size: 11px !important;
+}
+
+.gh-life-day-grid {
+    margin-top: 6px;
+
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.gh-life-day-chip {
+    min-width: 0;
+}
+
+.gh-life-day-chip input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.gh-life-day-chip span {
+    height: 34px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 9px;
+
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+    font-weight: 650;
+}
+
+.gh-life-day-chip input:checked + span {
+    border-color: rgba(102, 194, 181, 0.32);
+    background: var(--gh-life-accent-soft);
+    color: #dff8f4;
+}
+
+.gh-life-chip-presets {
+    margin-top: 6px;
+
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+/* ---------------------------------------------------------
+   Misc
+   --------------------------------------------------------- */
+
+.gh-life-info-box {
+    padding: 9px 10px;
+
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+
+    border: 1px solid rgba(102, 194, 181, 0.13);
+    border-radius: 12px;
+
+    background: rgba(102, 194, 181, 0.055);
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.gh-life-info-box i {
+    margin-top: 2px;
+
+    color: var(--gh-life-accent);
+}
+
+.gh-life-info-box strong {
+    color: rgba(255, 255, 255, 0.78);
+}
+
+.gh-life-empty {
+    padding: 20px 12px;
+
+    border: 1px dashed var(--gh-life-border);
+    border-radius: 13px;
+
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1.4;
+
+    text-align: center;
+}
+
+.gh-life-empty-large {
+    min-height: 260px;
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.gh-life-empty-large i {
+    color: var(--gh-life-accent);
+    font-size: 24px;
+}
+
+.gh-life-empty-large strong {
+    color: var(--gh-life-text);
+    font-size: 15px;
+}
+
+.gh-life-prompt-preview-section details,
+.gh-life-section details {
+    color: var(--gh-life-muted);
+    font-size: 10px;
+}
+
+.gh-life-section summary {
+    cursor: pointer;
+
+    color: rgba(255, 255, 255, 0.72);
+
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.gh-life-section pre {
+    max-height: 260px;
+
+    margin: 9px 0 0;
+    padding: 9px;
+
+    overflow: auto;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 11px;
+
+    background: #0d1014;
+    color: rgba(255, 255, 255, 0.68);
+
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9px;
+    line-height: 1.45;
+
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------
+   Mobile
+   --------------------------------------------------------- */
+
+@media screen and (max-width: 600px) {
+    #gh-life-hud {
+        top: calc(env(safe-area-inset-top) + 58px);
+        right: 9px;
+
+        max-width: 56vw;
+    }
+
+    dialog#gh-life-dialog {
+        width: calc(100vw - 12px) !important;
+        max-width: calc(100vw - 12px) !important;
+
+        height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom))) !important;
+        max-height: none !important;
+
+        border-radius: 21px !important;
+    }
+
+    dialog#gh-life-person-dialog,
+    dialog#gh-life-schedule-dialog {
+        width: calc(100vw - 18px) !important;
+        max-width: calc(100vw - 18px) !important;
+
+        max-height: calc(100dvh - max(22px, env(safe-area-inset-top)) - max(22px, env(safe-area-inset-bottom))) !important;
+
+        border-radius: 20px !important;
+    }
+
+    .gh-life-dialog-header {
+        min-height: 58px;
+    }
+
+    .gh-life-dialog-icon {
+        width: 34px;
+        height: 34px;
+        min-width: 34px;
+
+        border-radius: 11px;
+
+        font-size: 15px;
+    }
+
+    .gh-life-dialog-title {
+        font-size: 15px;
+    }
+
+    .gh-life-dialog-subtitle {
+        max-width: 62vw;
+    }
+
+    .gh-life-tab {
+        min-width: 65px;
+        height: 36px;
+
+        padding-left: 8px !important;
+        padding-right: 8px !important;
+
+        font-size: 10px !important;
+    }
+
+    .gh-life-dialog-body {
+        padding: 7px;
+    }
+
+    .gh-life-section {
+        padding: 11px;
+
+        border-radius: 16px;
+    }
+
+    .gh-life-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gh-life-span-2 {
+        grid-column: 1;
+    }
+
+    .gh-life-mode-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gh-life-mode-grid button {
+        min-height: 69px;
+    }
+
+    .gh-life-add-person-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gh-life-add-person-grid > button {
+        justify-self: stretch;
+    }
+
+    .gh-life-schedule-card {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gh-life-schedule-actions {
+        width: 100%;
+    }
+
+    .gh-life-schedule-actions button {
+        flex: 1 1 auto;
+    }
+
+    .gh-life-day-grid {
+        gap: 3px;
+    }
+
+    .gh-life-day-chip span {
+        height: 32px;
+
+        border-radius: 8px;
+
+        font-size: 8px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #gh-life-hud,
+    .gh-life-tab,
+    .gh-life-person-card {
+        transition: none !important;
+    }
+}
