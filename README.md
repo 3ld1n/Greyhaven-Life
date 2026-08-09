@@ -1,98 +1,145 @@
-# Greyhaven Life v1.0.0
+# Greyhaven Life v1.1.0
 
 A standalone SillyTavern extension for persistent, chat-scoped life simulation:
-roleplay time, current scenes, character locations, availability, recurring
-schedules, and compact AI continuity context.
+authoritative roleplay time, scene presence, character locations, availability,
+recurring schedules, and compact AI continuity context.
 
-It is designed to become the shared foundation for future extensions such as
-Greyhaven Phone, Immersion FX, Story Director, and Parallel Scenes.
+Greyhaven Life is intended to be the shared world-state foundation for future
+extensions such as Greyhaven Phone, Immersion FX, Story Director, and Parallel
+Scenes.
 
-## Core design
+## v1.1 highlights
 
-### Per-chat world state
-Greyhaven Life stores its world state inside the current chat's
-`chat_metadata.greyhavenLife` object.
+### Authoritative roleplay clock
 
-That means:
-- different chats do not share one universal timeline
-- alternate storylines can have different locations/times
-- normal SillyTavern branches/checkpoints can inherit the chat metadata and then
-  evolve independently
+The model is now given an explicit authoritative clock rule immediately before
+generation.
 
-Global display/context preferences are stored in SillyTavern extension settings.
+Example:
 
-## Roleplay clock
+    AUTHORITATIVE RP CLOCK: 11:36 on Sunday, Aug 9, 2026.
+    If anyone asks, reads, states, or reasons about the current time, use 11:36.
+    Do not infer another current time from schedules, old messages, prior
+    narration, chat timestamps, or assumptions.
 
-Three modes:
+The newest roleplay message can still explicitly advance/change time.
+
+The visible HUD continues to run entirely in JavaScript and makes no extra AI
+request.
+
+### Tracked is no longer the same as Present
+
+Every person now has a scene-presence state.
+
+For SillyTavern characters:
+- Auto from SillyTavern chat
+- Present in current scene
+- Off-screen
+
+For personas/custom people:
+- Present in current scene
+- Off-screen
+
+`Auto` follows the current solo character or enabled/unmuted group membership.
+
+The selected SillyTavern persona is deliberately NOT treated as proof that the
+persona is physically in the scene.
+
+Newly auto-detected personas start off-screen. Existing v1.0 persona entries
+migrate as Present so old chats are not unexpectedly changed.
+
+### Persona removal
+
+Any off-screen tracked person can now be removed, including the selected
+persona.
+
+Removing a person also places them on a per-chat ignore list, so the automatic
+participant scanner does not immediately add them back.
+
+If the currently selected persona was removed, the People tab shows an
+`Add active persona` button to explicitly restore them.
+
+Removed SillyTavern characters can be restored through the normal
+`Add character` selector.
+
+### Smarter low-token AI context
+
+Relevant mode now includes:
+1. people physically Present in the scene
+2. current SillyTavern character/responder candidates
+3. manually pinned off-screen people
+4. tracked people explicitly named in the newest user message
+
+This means a message such as:
+
+    Aurora, do you know where Jack is?
+
+can temporarily pull Jack's current Life state into that generation without
+requiring Jack to be permanently pinned.
+
+Off-screen locations remain world-state facts only. The prompt explicitly warns
+the model that another character does not automatically know them unless the
+roleplay establishes that knowledge.
+
+## Per-chat world state
+
+Greyhaven Life stores its state inside the current chat's metadata.
+
+Different chats/checkpoints can therefore maintain independent:
+- time
+- scene
+- tracked people
+- presence
+- schedules
+- locations
+- overrides
+
+## Roleplay clock modes
 
 ### Real time
 Uses the browser/phone's current local date and time.
 
-The HUD can visibly tick without making any model/API request. Before a normal
-generation, Greyhaven Life refreshes its prompt context from the current clock.
-
 ### Offset
-Runs with real time but shifted by a chosen number of minutes.
-
-Useful for:
-- Greece or another timezone
-- a roleplay that should be one or several hours ahead/behind real life
+Follows real time with a chosen minute/hour offset.
 
 ### Manual
-Choose any fictional date/time.
-
-Manual time can:
-- continue running after you set it
-- remain frozen
+Choose any fictional date/time and either:
+- continue running from that point
+- freeze time
 
 Quick actions include:
-- +15 minutes
-- +30 minutes
-- +1 hour
-- +3/+4/+6 hours
+- +15m
+- +30m
+- +1h
+- +3h / +4h / +6h
 - next morning
 - next day
-- use the latest chat message's real timestamp
-- sync back to real time
+- latest message real timestamp
+- sync to real time
 
 ## Current scene
 
 Each chat can track:
 - scene name
 - location
-- short scene note
+- short continuity note
 
-There is also a button to apply the current scene location as a temporary
-location override to the active persona and current character/group members.
+`Apply location to present people` applies the scene location only to people
+currently marked Present. Off-screen people are left untouched.
 
-## People / "Where is everyone?"
+## People / Where is everyone?
 
-The extension automatically adds:
-- the active persona
-- the current solo character
-- all members of the current SillyTavern group
-
-You can additionally add:
-- any character from your SillyTavern character library
-- a custom temporary person
-
-Each tracked person supports:
-
-### Default state
-- location
+Tracked people can keep:
+- default location
 - status
 - availability
-- optional note
+- notes
+- temporary override
+- recurring schedules
+- AI pin
+- scene presence
 
-### Temporary override
-- location
-- status
-- availability
-- optional expiry date/time
-
-Overrides win over schedules.
-
-### Availability
+Availability:
 - Available
 - Limited
 - Busy
@@ -100,79 +147,45 @@ Overrides win over schedules.
 - Sleeping
 - Unknown
 
+Presence is intentionally independent from availability. Someone may be:
+- Present + Busy
+- Present + Sleeping
+- Off-screen + Available
+- Off-screen + Working
+
 ## Recurring schedules
 
-Every tracked person can have as many recurring schedule blocks as needed.
-
-Each block supports:
+Each tracked person can have unlimited recurring blocks with:
 - label
-- days of week
-- start time
-- end time
+- days
+- start/end time
 - location
 - status
 - availability
 - priority
-- note
+- optional note
 
-Weekday / weekend / every-day presets are included.
+Overrides beat schedules.
 
-Overnight schedules are supported. Example:
-
-Friday 22:00 -> Saturday 06:00
-
-remains active correctly after midnight.
-
-If schedules overlap, the one with higher priority wins.
+Overnight blocks such as Friday 22:00 -> Saturday 06:00 are supported.
 
 ## AI continuity injection
 
-Greyhaven Life does NOT make a second AI request.
+Greyhaven Life does not make a second model request.
 
-It uses SillyTavern's normal extension-prompt system to inject a compact current
-state into the next generation.
+It refreshes a compact extension prompt before the normal SillyTavern
+generation.
 
-Default low-token scope:
-- current persona
-- current chat/group members
-- any manually pinned off-screen person
+Example:
 
-Optional setting:
-- inject all tracked people instead
+    [Greyhaven Life — authoritative current roleplay state.]
+    AUTHORITATIVE RP CLOCK: 11:36 on Sunday, Aug 9, 2026.
+    Current scene: Morning at home — Eldin's Apartment.
+    Eldin: presence: present in the current scene; location: Eldin's Apartment.
+    Aurora: presence: off-screen; location: Greyhaven City Hospital;
+            status: Working; availability: busy; schedule: Hospital Shift.
 
-The generated context looks approximately like:
-
-    [Greyhaven Life — current roleplay state...]
-    Current RP date/time: Sunday, Aug 9, 2026, 20:00.
-    Current scene: Hospital shift — Greyhaven City Hospital.
-    Eldin: location: Home; availability: available.
-    Aurora: location: Greyhaven City Hospital; status: On shift;
-            availability: busy; schedule: Hospital shift.
-    ...
-
-Explicit events in the actual chat are instructed to override stored Life state
-when they conflict.
-
-## HUD
-
-A small floating clock pill can be enabled or disabled.
-
-It can show:
-- roleplay time
-- current scene/location
-
-Tap it to open Greyhaven Life.
-
-The extension also adds "Greyhaven Life" to SillyTavern's Extensions menu.
-
-## Import / export
-
-The Settings tab can:
-- copy the current chat's Greyhaven Life JSON
-- import JSON into the current chat
-- reset only the current chat's Life state
-
-## Public API for future extensions
+## Public API
 
 Greyhaven Life exposes:
 
@@ -186,8 +199,12 @@ Important methods:
     GreyhavenLife.getTimeISO()
     GreyhavenLife.getScene()
     GreyhavenLife.getPeople()
+    GreyhavenLife.getPresentPeople()
     GreyhavenLife.getPerson(nameOrId)
     GreyhavenLife.getResolvedPerson(nameOrId)
+    GreyhavenLife.isPresent(nameOrId)
+    GreyhavenLife.setPresence(nameOrId, "auto" | "present" | "offscreen")
+    GreyhavenLife.getMentionedPeople()
     GreyhavenLife.getPromptSummary()
     GreyhavenLife.setScene(...)
     GreyhavenLife.setRealTime()
@@ -196,65 +213,50 @@ Important methods:
     GreyhavenLife.shiftMinutes(...)
     GreyhavenLife.subscribe(...)
 
-Browser events:
+This presence-aware API is intended for future Phone/Snap Map and Story Director
+integration.
 
-    greyhaven-life:changed
-    greyhaven-life:tick
+## Upgrading from v1.0.1
 
-These are intentionally provided so Greyhaven Phone and Story Director can use
-the same clock, locations, schedules, and availability instead of inventing
-their own world state.
+Existing:
+- times
+- schedules
+- locations
+- overrides
+- notes
+- pins
+
+are preserved.
+
+Presence migration:
+- existing character entries -> Auto
+- existing persona entries -> Present
+- existing custom entries -> Off-screen
+
+After upgrading, open People once and adjust any old persona/character that is
+not physically present in the current scene.
+
+## Recommended v1.1 test
+
+1. Upgrade an existing test chat.
+2. Open People.
+3. Mark the persona Present or Off-screen.
+4. Mark a character Off-screen and confirm Remove appears.
+5. Remove the persona if desired; confirm it stays removed after Re-scan.
+6. Use `Add active persona` to restore it.
+7. Keep Aurora on a work schedule and set the clock to 11:36.
+8. Ask Aurora the current time and verify she uses the Greyhaven Life clock.
+9. Track Jack off-screen but do not pin him.
+10. Ask `Where is Jack?` and inspect AI Context Preview; Jack should be included
+    only because his name appears in the newest user message.
 
 ## Installation
 
-Install from a Git repository through SillyTavern's extension manager, or place
-the folder in your SillyTavern third-party extensions directory.
-
-Repository root should contain:
+Repository root:
 
     manifest.json
     index.js
     style.css
     README.md
 
-## Compatibility
-
-Minimum SillyTavern client version: 1.13.3
-
-This version relies on APIs exposed in current SillyTavern context including:
-- chatMetadata
-- updateChatMetadata
-- saveMetadataDebounced
-- setExtensionPrompt
-- eventSource / eventTypes
-- extensionSettings
-
-## Recommended first test
-
-1. Open an existing roleplay chat.
-2. Tap the small Greyhaven Life clock HUD.
-3. Keep time on Real Time.
-4. Set a current scene, e.g.:
-   - Scene: Evening at home
-   - Location: Aurora's apartment
-5. Open Aurora in People:
-   - set base location
-   - add a temporary override if desired
-6. Add a recurring work schedule:
-   - Mon–Fri
-   - 08:00–16:00
-   - Greyhaven City Hospital
-   - status: On shift
-   - availability: Busy
-7. Open AI Context Preview to verify what the model will receive.
-8. Send a normal roleplay message and confirm the character naturally respects
-   the current time/location without reciting the metadata.
-
-## v1.0.1 fixes
-
-- Fixed recurring schedules sometimes closing the editor without actually being added.
-- Schedule saves now update a fresh copy of the current chat state by person ID and immediately refresh the Schedules screen.
-- Added **Remove** for tracked characters who are no longer currently present in the chat.
-- The active persona and currently present chat characters are protected from accidental removal.
-- Muted/disabled group members are no longer treated as currently present for auto-detection.
-- Improved chat-metadata persistence fallback for SillyTavern versions exposing different metadata save helpers.
+Minimum SillyTavern client version remains 1.13.3.

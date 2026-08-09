@@ -1,5 +1,5 @@
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.0.0';
+const GH_VERSION = '1.1.0';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -145,6 +145,7 @@ function ghDefaultState() {
         },
         people: {},
         peopleOrder: [],
+        ignoredPeople: [],
     };
 }
 
@@ -158,6 +159,16 @@ function ghNormalizePerson(person) {
     safe.sourceKey ||= '';
     safe.characterId ??= null;
     safe.pinContext ??= false;
+
+    // Presence is deliberately separate from the selected SillyTavern persona.
+    // Existing v1.0 data migrates safely: characters follow ST automatically,
+    // existing personas remain present, and custom people start off-screen.
+    if (!['auto', 'present', 'offscreen'].includes(safe.presenceMode)) {
+        safe.presenceMode =
+            safe.source === 'character' ? 'auto' :
+            safe.source === 'persona' ? 'present' :
+            'offscreen';
+    }
 
     safe.base ||= {};
     safe.base.location ||= '';
@@ -197,7 +208,7 @@ function ghNormalizePerson(person) {
 function ghNormalizeState(raw) {
     const state = raw && typeof raw === 'object' ? raw : ghDefaultState();
 
-    state.version ||= 1;
+    state.version = Math.max(2, Number(state.version || 1));
     state.createdAt ||= Date.now();
     state.updatedAt ||= Date.now();
 
@@ -218,6 +229,8 @@ function ghNormalizeState(raw) {
         state.people = {};
     }
     if (!Array.isArray(state.peopleOrder)) state.peopleOrder = [];
+    if (!Array.isArray(state.ignoredPeople)) state.ignoredPeople = [];
+    state.ignoredPeople = [...new Set(state.ignoredPeople.map(String))];
 
     for (const [id, person] of Object.entries(state.people)) {
         state.people[id] = ghNormalizePerson({ ...person, id });
@@ -530,6 +543,8 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
         sourceLabel: '',
         schedule: null,
         override: null,
+        present: ghIsPersonPresent(person),
+        presenceMode: person.presenceMode || 'offscreen',
     };
 
     const schedule = ghFindActiveSchedule(person, date);
@@ -571,15 +586,11 @@ function ghCurrentPersonaAvatar() {
     return userAvatar?.src || '';
 }
 
-function ghCurrentParticipantIds() {
-    const state = ghGetState({ create: false });
-    const ctx = ghCtx();
-    if (!state || !ctx) return [];
+
+function ghGetActiveCharacterIds(ctx = ghCtx()) {
+    if (!ctx) return [];
 
     const ids = new Set();
-
-    const personaId = `persona:${String(ctx.name1 || 'User').toLowerCase()}`;
-    if (state.people[personaId]) ids.add(personaId);
 
     if (ctx.groupId) {
         const group = ctx.groups?.find(group => String(group.id) === String(ctx.groupId));
@@ -592,20 +603,90 @@ function ghCurrentParticipantIds() {
 
                 const character = ctx.characters?.find(item => item?.avatar === avatar);
                 if (!character) continue;
-
-                const id = ghPersonIdFromCharacter(character);
-                if (state.people[id]) ids.add(id);
+                ids.add(ghPersonIdFromCharacter(character));
             }
         }
     } else if (ctx.characterId !== undefined && ctx.characterId !== null) {
         const character = ctx.characters?.[Number(ctx.characterId)];
-        if (character) {
-            const id = ghPersonIdFromCharacter(character);
-            if (state.people[id]) ids.add(id);
-        }
+        if (character) ids.add(ghPersonIdFromCharacter(character));
     }
 
     return [...ids];
+}
+
+function ghCurrentParticipantIds() {
+    const state = ghGetState({ create: false });
+    const ctx = ghCtx();
+    if (!state || !ctx) return [];
+
+    const ids = new Set(ghGetActiveCharacterIds(ctx));
+
+    // This is a technical "current SillyTavern participants" helper, not a
+    // physical-presence helper. A selected persona is not automatically present.
+    const personaId = `persona:${String(ctx.name1 || 'User').toLowerCase()}`;
+    if (state.people[personaId]) ids.add(personaId);
+
+    return [...ids].filter(id => state.people[id]);
+}
+
+function ghIsPersonPresent(person) {
+    if (!person) return false;
+
+    if (person.presenceMode === 'present') return true;
+    if (person.presenceMode === 'offscreen') return false;
+
+    // "Auto" is intentionally only meaningful for SillyTavern characters.
+    // It follows enabled group members / the current solo character.
+    if (person.presenceMode === 'auto' && person.source === 'character') {
+        return ghGetActiveCharacterIds().includes(person.id);
+    }
+
+    return false;
+}
+
+function ghGetPresentPeople() {
+    return ghGetTrackedPeople().filter(ghIsPersonPresent);
+}
+
+function ghLatestUserMessageText() {
+    const ctx = ghCtx();
+    const messages = Array.isArray(ctx?.chat) ? ctx.chat : [];
+
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (!message?.is_user) continue;
+
+        const value = message.mes ?? message.message ?? message.text ?? '';
+        if (typeof value === 'string') return value;
+    }
+
+    return '';
+}
+
+function ghNameAppearsInText(name, text) {
+    const cleanName = String(name || '').trim();
+    const cleanText = String(text || '');
+    if (!cleanName || !cleanText) return false;
+
+    const escaped = cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    try {
+        // Unicode-aware loose boundaries handle names with spaces/apostrophes
+        // better than \b while still avoiding accidental substring matches.
+        const pattern = new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}($|[^\\p{L}\\p{N}_])`, 'iu');
+        return pattern.test(cleanText);
+    } catch {
+        return cleanText.toLowerCase().includes(cleanName.toLowerCase());
+    }
+}
+
+function ghGetMentionedPersonIds() {
+    const text = ghLatestUserMessageText();
+    if (!text) return [];
+
+    return ghGetTrackedPeople()
+        .filter(person => ghNameAppearsInText(person.name, text))
+        .map(person => person.id);
 }
 
 function ghEnsureCurrentParticipants({ save = true } = {}) {
@@ -617,9 +698,12 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
 
     const state = ghGetState();
     let changed = false;
+    const ignored = new Set((state.ignoredPeople || []).map(String));
 
     const addPerson = person => {
         const normalized = ghNormalizePerson(person);
+        if (ignored.has(normalized.id)) return;
+
         const existing = state.people[normalized.id];
 
         if (!existing) {
@@ -629,7 +713,8 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
             return;
         }
 
-        // Keep user-edited fields, but refresh identity metadata.
+        // Keep user-edited Life fields and presence choice, but refresh identity
+        // metadata from SillyTavern.
         if (normalized.name && existing.name !== normalized.name) {
             existing.name = normalized.name;
             changed = true;
@@ -653,6 +738,10 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
         sourceKey: personaName,
         characterId: null,
         pinContext: false,
+        // Selecting/switching a persona does NOT mean that person is physically
+        // in the current scene. Existing v1.0 personas migrate as present, but
+        // newly detected personas start off-screen until the user marks them.
+        presenceMode: 'offscreen',
         base: {
             location: '',
             status: '',
@@ -682,6 +771,7 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
                     sourceKey: character?.avatar || character?.name || '',
                     characterId,
                     pinContext: false,
+                    presenceMode: 'auto',
                     base: {
                         location: '',
                         status: '',
@@ -704,6 +794,7 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
                 sourceKey: character?.avatar || character?.name || '',
                 characterId,
                 pinContext: false,
+                presenceMode: 'auto',
                 base: {
                     location: '',
                     status: '',
@@ -718,6 +809,7 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
         ghPersistState(state, { reason: 'participants' });
     } else if (changed) {
         const fresh = ghCtx();
+        if (fresh?.chatMetadata) fresh.chatMetadata[GH_META_KEY] = state;
         fresh?.updateChatMetadata?.({ [GH_META_KEY]: state });
     }
 }
@@ -731,6 +823,7 @@ function ghGetTrackedPeople() {
         .filter(Boolean);
 }
 
+
 function ghGetRelevantPeopleForPrompt() {
     const state = ghGetState();
     if (!state) return [];
@@ -741,9 +834,29 @@ function ghGetRelevantPeopleForPrompt() {
         return ghGetTrackedPeople();
     }
 
-    const relevant = new Set(ghCurrentParticipantIds());
+    const relevant = new Set();
+
+    // 1) Everybody physically present in the current scene.
+    for (const person of ghGetPresentPeople()) {
+        relevant.add(person.id);
+    }
+
+    // 2) Current SillyTavern characters remain relevant as possible responders,
+    // even if the user has manually marked one off-screen (for example, a
+    // remote text-message exchange inside a group chat).
+    for (const id of ghGetActiveCharacterIds()) {
+        if (state.people[id]) relevant.add(id);
+    }
+
+    // 3) Explicitly pinned off-screen people.
     for (const person of ghGetTrackedPeople()) {
         if (person.pinContext) relevant.add(person.id);
+    }
+
+    // 4) Anyone specifically named in the newest user message. This makes
+    // questions such as "Where is Jack?" work without permanently pinning Jack.
+    for (const id of ghGetMentionedPersonIds()) {
+        if (state.people[id]) relevant.add(id);
     }
 
     return [...relevant].map(id => state.people[id]).filter(Boolean);
@@ -761,9 +874,21 @@ function ghBuildPromptSummary() {
 
     const date = ghGetCurrentTime(state);
     const lines = [];
+    const exactTime = new Intl.DateTimeFormat(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).format(date);
+    const exactDate = new Intl.DateTimeFormat(undefined, {
+        weekday: 'long',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+    }).format(date);
 
-    lines.push('[Greyhaven Life — current roleplay state. Use this for continuity; do not quote this block as metadata.]');
-    lines.push(`Current RP date/time: ${ghFormatDate(date)} (${ghTimeModeLabel(state)}).`);
+    lines.push('[Greyhaven Life — authoritative current roleplay state. Use this silently for continuity; do not quote this block as metadata.]');
+    lines.push(`AUTHORITATIVE RP CLOCK: ${exactTime} on ${exactDate} (${ghTimeModeLabel(state)}).`);
+    lines.push(`Time rule: this is the exact current fictional time now. If anyone asks, reads, states, or reasons about the current time, use ${exactTime}. Do not infer a different current time from schedules, old messages, chat timestamps, prior narration, or assumptions. Only an explicit time change in the newest roleplay message may override this clock.`);
 
     const sceneParts = [];
     if (state.scene.label) sceneParts.push(state.scene.label);
@@ -781,6 +906,9 @@ function ghBuildPromptSummary() {
     for (const person of people) {
         const resolved = ghResolvePerson(person, date);
         const fields = [];
+        const present = ghIsPersonPresent(person);
+
+        fields.push(`presence: ${present ? 'present in the current scene' : 'off-screen'}`);
 
         if (resolved.location) fields.push(`location: ${resolved.location}`);
         if (resolved.status) fields.push(`status: ${resolved.status}`);
@@ -794,12 +922,10 @@ function ghBuildPromptSummary() {
             fields.push(`note: ${resolved.notes}`);
         }
 
-        if (fields.length) {
-            lines.push(`${person.name}: ${fields.join('; ')}.`);
-        }
+        lines.push(`${person.name}: ${fields.join('; ')}.`);
     }
 
-    lines.push('Continuity rules: explicit events in the roleplay override this state if they conflict. Location does not imply knowledge of events elsewhere. Respect availability and schedules naturally rather than mentioning them mechanically.');
+    lines.push('Continuity rules: "tracked" does not mean physically present. Off-screen location/status are world-state facts, not automatic knowledge for every character. A character only knows another person\'s off-screen state if the roleplay establishes that knowledge. Respect schedules and availability naturally rather than mentioning them mechanically. Explicit events in the newest roleplay message override conflicting Life state.');
 
     return lines.join('\n');
 }
@@ -832,6 +958,7 @@ function ghSetScene(partial) {
     }, 'scene');
 }
 
+
 function ghApplySceneLocationToCurrentParticipants() {
     const state = ghGetState();
     if (!state?.scene?.location) {
@@ -839,8 +966,11 @@ function ghApplySceneLocationToCurrentParticipants() {
         return;
     }
 
-    const ids = ghCurrentParticipantIds();
-    if (!ids.length) return;
+    const ids = ghGetPresentPeople().map(person => person.id);
+    if (!ids.length) {
+        globalThis.toastr?.warning?.('Nobody is currently marked present in this scene.');
+        return;
+    }
 
     ghMutate(draft => {
         for (const id of ids) {
@@ -853,7 +983,7 @@ function ghApplySceneLocationToCurrentParticipants() {
         }
     }, 'people');
 
-    globalThis.toastr?.success?.('Scene location applied to current participants.');
+    globalThis.toastr?.success?.('Scene location applied to present people.');
 }
 
 function ghAddCharacterFromLibrary(characterId) {
@@ -864,6 +994,8 @@ function ghAddCharacterFromLibrary(characterId) {
     const state = ghGetState();
     const id = ghPersonIdFromCharacter(character);
 
+    state.ignoredPeople = (state.ignoredPeople || []).filter(item => item !== id);
+
     if (!state.people[id]) {
         state.people[id] = ghNormalizePerson({
             id,
@@ -873,10 +1005,45 @@ function ghAddCharacterFromLibrary(characterId) {
             sourceKey: character.avatar || character.name || '',
             characterId: Number(characterId),
             pinContext: false,
+            presenceMode: 'auto',
         });
         state.peopleOrder.push(id);
-        ghPersistState(state, { reason: 'people' });
     }
+
+    ghPersistState(state, { reason: 'people' });
+}
+
+function ghAddCurrentPersona() {
+    const ctx = ghCtx();
+    if (!ctx) return;
+
+    const personaName = ctx.name1 || 'User';
+    const id = `persona:${String(personaName).toLowerCase()}`;
+    const state = ghGetState();
+
+    state.ignoredPeople = (state.ignoredPeople || []).filter(item => item !== id);
+
+    if (!state.people[id]) {
+        state.people[id] = ghNormalizePerson({
+            id,
+            name: personaName,
+            avatar: ghCurrentPersonaAvatar(),
+            source: 'persona',
+            sourceKey: personaName,
+            characterId: null,
+            pinContext: false,
+            presenceMode: 'offscreen',
+            base: {
+                location: '',
+                status: '',
+                availability: 'available',
+                notes: '',
+            },
+        });
+        state.peopleOrder.push(id);
+    }
+
+    ghPersistState(state, { reason: 'people' });
 }
 
 function ghAddCustomPerson(name) {
@@ -890,6 +1057,7 @@ function ghAddCustomPerson(name) {
             name: clean,
             source: 'custom',
             pinContext: false,
+            presenceMode: 'offscreen',
         });
         state.peopleOrder.push(id);
     }, 'people');
@@ -897,6 +1065,7 @@ function ghAddCustomPerson(name) {
 
 function ghDeletePerson(id) {
     ghMutate(state => {
+        if (!state.ignoredPeople.includes(id)) state.ignoredPeople.push(id);
         delete state.people[id];
         state.peopleOrder = state.peopleOrder.filter(item => item !== id);
     }, 'people');
@@ -906,6 +1075,31 @@ function ghAvailabilityOptions(selected, { inherit = false } = {}) {
     const options = inherit ? [['inherit', 'Inherit current/schedule'], ...GH_AVAILABILITY] : GH_AVAILABILITY;
     return options.map(([value, label]) =>
         `<option value="${ghEscape(value)}" ${value === selected ? 'selected' : ''}>${ghEscape(label)}</option>`
+    ).join('');
+}
+
+
+function ghPresenceLabel(person) {
+    return ghIsPersonPresent(person) ? 'Present' : 'Off-screen';
+}
+
+function ghPresenceModeLabel(person) {
+    if (person?.presenceMode === 'auto') return 'Auto from chat';
+    return person?.presenceMode === 'present' ? 'Present' : 'Off-screen';
+}
+
+function ghPresenceModeOptions(person) {
+    const options = [];
+
+    if (person?.source === 'character') {
+        options.push(['auto', 'Auto from SillyTavern chat']);
+    }
+
+    options.push(['present', 'Present in current scene']);
+    options.push(['offscreen', 'Off-screen']);
+
+    return options.map(([value, label]) =>
+        `<option value="${ghEscape(value)}" ${person?.presenceMode === value ? 'selected' : ''}>${ghEscape(label)}</option>`
     ).join('');
 }
 
@@ -920,9 +1114,11 @@ function ghRenderOverview() {
     const state = ghGetState();
     const date = ghGetCurrentTime(state);
     const people = ghGetTrackedPeople();
+    const presentCount = people.filter(ghIsPersonPresent).length;
 
     const resolvedCards = people.map(person => {
         const resolved = ghResolvePerson(person, date);
+        const present = ghIsPersonPresent(person);
 
         return `
             <button type="button" class="gh-life-person-card" data-gh-edit-person="${ghEscape(person.id)}">
@@ -937,8 +1133,13 @@ function ghRenderOverview() {
                         ${resolved.sourceLabel ? ` · ${ghEscape(resolved.sourceLabel)}` : ''}
                     </span>
                 </span>
-                <span class="gh-life-availability gh-life-availability-${ghEscape(resolved.availability)}">
-                    ${ghEscape(ghAvailabilityLabel(resolved.availability))}
+                <span class="gh-life-card-badges">
+                    <span class="gh-life-presence ${present ? 'is-present' : 'is-offscreen'}">
+                        ${present ? '<i class="fa-solid fa-location-dot"></i> Present' : '<i class="fa-regular fa-circle"></i> Off-screen'}
+                    </span>
+                    <span class="gh-life-availability gh-life-availability-${ghEscape(resolved.availability)}">
+                        ${ghEscape(ghAvailabilityLabel(resolved.availability))}
+                    </span>
                 </span>
             </button>
         `;
@@ -996,7 +1197,7 @@ function ghRenderOverview() {
                     <i class="fa-solid fa-location-dot"></i> Save scene
                 </button>
                 <button type="button" data-gh-apply-scene>
-                    Apply location to present chat members
+                    Apply location to present people
                 </button>
             </div>
         </section>
@@ -1005,7 +1206,7 @@ function ghRenderOverview() {
             <div class="gh-life-section-heading">
                 <div>
                     <div class="gh-life-section-title">Where is everyone?</div>
-                    <div class="gh-life-section-subtitle">${people.length} tracked ${people.length === 1 ? 'person' : 'people'} in this chat timeline.</div>
+                    <div class="gh-life-section-subtitle">${people.length} tracked · ${presentCount} present in this scene.</div>
                 </div>
                 <button type="button" class="gh-life-small-button" data-gh-tab-go="people">Manage</button>
             </div>
@@ -1114,21 +1315,20 @@ function ghRenderTimeTab() {
     `;
 }
 
+
 function ghRenderPeopleTab() {
     const state = ghGetState();
     const date = ghGetCurrentTime(state);
     const people = ghGetTrackedPeople();
     const ctx = ghCtx();
-    const currentParticipantIds = new Set(ghCurrentParticipantIds());
 
     const cards = people.map(person => {
         const resolved = ghResolvePerson(person, date);
-        const canRemove =
-            person.source === 'custom' ||
-            (person.source === 'character' && !currentParticipantIds.has(person.id));
+        const present = ghIsPersonPresent(person);
+        const canRemove = !present;
 
         return `
-            <div class="gh-life-manage-person">
+            <div class="gh-life-manage-person ${present ? 'is-present' : 'is-offscreen'}">
                 <div class="gh-life-manage-person-top">
                     ${ghPersonAvatarHtml(person)}
                     <div class="gh-life-person-main">
@@ -1137,11 +1337,20 @@ function ghRenderPeopleTab() {
                         <div class="gh-life-person-meta">
                             ${ghEscape(resolved.status || ghAvailabilityLabel(resolved.availability))}
                             ${resolved.sourceLabel ? ` · ${ghEscape(resolved.sourceLabel)}` : ''}
+                            ${person.presenceMode === 'auto' ? ' · Auto presence' : ''}
                         </div>
                     </div>
-                    <span class="gh-life-availability gh-life-availability-${ghEscape(resolved.availability)}">${ghEscape(ghAvailabilityLabel(resolved.availability))}</span>
+                    <span class="gh-life-card-badges">
+                        <span class="gh-life-presence ${present ? 'is-present' : 'is-offscreen'}">
+                            ${present ? '<i class="fa-solid fa-location-dot"></i> Present' : '<i class="fa-regular fa-circle"></i> Off-screen'}
+                        </span>
+                        <span class="gh-life-availability gh-life-availability-${ghEscape(resolved.availability)}">${ghEscape(ghAvailabilityLabel(resolved.availability))}</span>
+                    </span>
                 </div>
                 <div class="gh-life-person-actions">
+                    <button type="button" data-gh-toggle-presence="${ghEscape(person.id)}" class="${present ? 'active' : ''}">
+                        ${present ? '<i class="fa-solid fa-location-dot"></i> Mark off-screen' : '<i class="fa-solid fa-location-dot"></i> Mark present'}
+                    </button>
                     <button type="button" data-gh-edit-person="${ghEscape(person.id)}">Edit</button>
                     <button type="button" data-gh-schedule-person="${ghEscape(person.id)}">Schedule</button>
                     <button type="button" data-gh-toggle-pin="${ghEscape(person.id)}" class="${person.pinContext ? 'active' : ''}">
@@ -1166,12 +1375,16 @@ function ghRenderPeopleTab() {
         .map(({ character, index }) => `<option value="${index}">${ghEscape(character.name)}</option>`)
         .join('');
 
+    const personaName = ctx?.name1 || 'User';
+    const personaId = `persona:${String(personaName).toLowerCase()}`;
+    const personaTracked = !!state.people[personaId];
+
     return `
         <section class="gh-life-section">
             <div class="gh-life-section-heading">
                 <div>
                     <div class="gh-life-section-title">People</div>
-                    <div class="gh-life-section-subtitle">Only the current chat's state is changed. Other chats keep their own timeline.</div>
+                    <div class="gh-life-section-subtitle">Tracked people can be present or off-screen. Selecting a persona does not mean they are physically in the scene.</div>
                 </div>
                 <button type="button" class="gh-life-small-button" data-gh-rescan>Re-scan chat</button>
             </div>
@@ -1184,6 +1397,13 @@ function ghRenderPeopleTab() {
         <section class="gh-life-section">
             <div class="gh-life-section-title">Add someone</div>
             <div class="gh-life-add-person-grid">
+                ${!personaTracked ? `
+                    <div class="gh-life-span-2 gh-life-inline-add-persona">
+                        <span>Active persona <strong>${ghEscape(personaName)}</strong> is not currently tracked.</span>
+                        <button type="button" data-gh-add-persona>Add active persona</button>
+                    </div>
+                ` : ''}
+
                 <label>
                     <span>Existing character</span>
                     <select id="gh-life-add-character">
@@ -1205,7 +1425,7 @@ function ghRenderPeopleTab() {
             <div class="gh-life-info-box">
                 <i class="fa-solid fa-circle-info"></i>
                 <div>
-                    <strong>Pin to AI</strong> keeps someone in Greyhaven Life's AI context even when they are not a current chat participant. This is useful for an important off-screen person. Otherwise the default low-token mode only injects current participants.
+                    <strong>Presence is separate from tracking.</strong> Present people are physically in the current scene. Off-screen people keep their schedules, locations and overrides without being treated as standing in the room. In Relevant AI mode, Greyhaven Life includes present people, active responder characters, pinned people, and tracked people explicitly named in your newest message.
                 </div>
             </div>
         </section>
@@ -1332,10 +1552,10 @@ function ghRenderSettingsTab() {
             <label class="gh-life-setting-row gh-life-setting-row-stack">
                 <span>
                     <strong>Context scope</strong>
-                    <small>Relevant is recommended to keep tokens low.</small>
+                    <small>Relevant is recommended to keep tokens low while still pulling in people who matter to the newest message.</small>
                 </span>
                 <select id="gh-life-setting-scope">
-                    <option value="relevant" ${settings.contextScope === 'relevant' ? 'selected' : ''}>Current chat participants + pinned people</option>
+                    <option value="relevant" ${settings.contextScope === 'relevant' ? 'selected' : ''}>Present + responder + mentioned + pinned people</option>
                     <option value="all" ${settings.contextScope === 'all' ? 'selected' : ''}>All tracked people</option>
                 </select>
             </label>
@@ -1367,7 +1587,7 @@ function ghRenderSettingsTab() {
             <label class="gh-life-setting-row">
                 <span>
                     <strong>Auto-add current chat participants</strong>
-                    <small>Adds the active persona and current character/group members to this chat's Life state.</small>
+                    <small>Tracks the active persona and current character/group members. Tracking does not automatically mean physically present.</small>
                 </span>
                 <input type="checkbox" id="gh-life-setting-auto-add" ${settings.autoAddParticipants ? 'checked' : ''}>
             </label>
@@ -1631,6 +1851,16 @@ function ghOpenPersonEditor(personId) {
                     </div>
                 </section>
 
+                <label class="gh-life-setting-row gh-life-setting-row-stack">
+                    <span>
+                        <strong>Scene presence</strong>
+                        <small>${person.source === 'character'
+                            ? 'Auto follows whether this character is enabled in the current SillyTavern chat. Manual choices override that.'
+                            : 'This is independent from which SillyTavern persona is currently selected.'}</small>
+                    </span>
+                    <select id="gh-person-presence-mode">${ghPresenceModeOptions(person)}</select>
+                </label>
+
                 <label class="gh-life-setting-row">
                     <span>
                         <strong>Pin to AI context</strong>
@@ -1686,6 +1916,7 @@ function ghOpenPersonEditor(personId) {
         const untilDate = untilValue ? new Date(untilValue) : null;
         person.override.untilMs = untilDate && !Number.isNaN(untilDate.getTime()) ? untilDate.getTime() : null;
 
+        person.presenceMode = dialog.querySelector('#gh-person-presence-mode')?.value || person.presenceMode || 'offscreen';
         person.pinContext = dialog.querySelector('#gh-person-pin-context').checked;
 
         ghPersistState(state, { reason: 'people' });
@@ -2059,6 +2290,19 @@ function ghHandleMainDialogClick(event) {
         return;
     }
 
+    if (target.matches('[data-gh-toggle-presence]')) {
+        const id = target.dataset.ghTogglePresence;
+        const person = ghGetState()?.people?.[id];
+        if (!person) return;
+
+        const currentlyPresent = ghIsPersonPresent(person);
+        ghMutate(state => {
+            if (!state.people[id]) return;
+            state.people[id].presenceMode = currentlyPresent ? 'offscreen' : 'present';
+        }, 'presence');
+        return;
+    }
+
     if (target.matches('[data-gh-toggle-pin]')) {
         const id = target.dataset.ghTogglePin;
         ghMutate(state => {
@@ -2069,9 +2313,15 @@ function ghHandleMainDialogClick(event) {
 
     if (target.matches('[data-gh-delete-person]')) {
         const id = target.dataset.ghDeletePerson;
-        const name = ghGetState()?.people?.[id]?.name || 'this person';
+        const person = ghGetState()?.people?.[id];
+        const name = person?.name || 'this person';
 
-        if (globalThis.confirm?.(`Remove ${name} from Greyhaven Life in this chat?\n\nTheir Life location, status, overrides, and schedules for this chat will be removed. You can add them again later.`)) {
+        if (person && ghIsPersonPresent(person)) {
+            globalThis.toastr?.warning?.(`Mark ${name} off-screen before removing them from this chat's Life tracker.`);
+            return;
+        }
+
+        if (globalThis.confirm?.(`Remove ${name} from Greyhaven Life in this chat?\n\nTheir Life location, status, overrides, and schedules for this chat will be removed. Greyhaven Life will not automatically re-add them until you add them again.`)) {
             ghDeletePerson(id);
             globalThis.toastr?.success?.(`${name} removed from this chat's Life tracker.`);
         }
@@ -2081,6 +2331,11 @@ function ghHandleMainDialogClick(event) {
     if (target.matches('[data-gh-rescan]')) {
         ghEnsureCurrentParticipants();
         globalThis.toastr?.success?.('Current chat participants re-scanned.');
+        return;
+    }
+
+    if (target.matches('[data-gh-add-persona]')) {
+        ghAddCurrentPersona();
         return;
     }
 
@@ -2261,6 +2516,13 @@ function ghSubscribe(listener) {
 }
 
 function ghExposeApi() {
+    const findPerson = nameOrId => {
+        const lower = String(nameOrId || '').toLowerCase();
+        return ghGetTrackedPeople().find(item =>
+            item.id === nameOrId || String(item.name).toLowerCase() === lower
+        ) || null;
+    };
+
     globalThis.GreyhavenLife = {
         version: GH_VERSION,
         open: ghOpen,
@@ -2271,18 +2533,58 @@ function ghExposeApi() {
         getScene: () => ghClone(ghGetState({ create: false })?.scene || null),
         getPeople: () => ghGetTrackedPeople().map(person => ({
             ...ghClone(person),
+            present: ghIsPersonPresent(person),
+            resolved: ghResolvePerson(person),
+        })),
+        getPresentPeople: () => ghGetPresentPeople().map(person => ({
+            ...ghClone(person),
+            present: true,
             resolved: ghResolvePerson(person),
         })),
         getPerson: nameOrId => {
-            const lower = String(nameOrId || '').toLowerCase();
-            const person = ghGetTrackedPeople().find(item =>
-                item.id === nameOrId || String(item.name).toLowerCase() === lower
-            );
-            return person ? { ...ghClone(person), resolved: ghResolvePerson(person) } : null;
+            const person = findPerson(nameOrId);
+            return person
+                ? {
+                    ...ghClone(person),
+                    present: ghIsPersonPresent(person),
+                    resolved: ghResolvePerson(person),
+                }
+                : null;
         },
         getResolvedPerson: nameOrId => {
             const person = globalThis.GreyhavenLife.getPerson(nameOrId);
             return person?.resolved ? ghClone(person.resolved) : null;
+        },
+        isPresent: nameOrId => {
+            const person = findPerson(nameOrId);
+            return !!person && ghIsPersonPresent(person);
+        },
+        setPresence: (nameOrId, mode = 'present') => {
+            const person = findPerson(nameOrId);
+            if (!person) return false;
+
+            const allowed = person.source === 'character'
+                ? ['auto', 'present', 'offscreen']
+                : ['present', 'offscreen'];
+
+            if (!allowed.includes(mode)) return false;
+
+            ghMutate(state => {
+                if (state.people[person.id]) {
+                    state.people[person.id].presenceMode = mode;
+                }
+            }, 'presence');
+            return true;
+        },
+        getMentionedPeople: () => {
+            const ids = new Set(ghGetMentionedPersonIds());
+            return ghGetTrackedPeople()
+                .filter(person => ids.has(person.id))
+                .map(person => ({
+                    ...ghClone(person),
+                    present: ghIsPersonPresent(person),
+                    resolved: ghResolvePerson(person),
+                }));
         },
         getPromptSummary: ghBuildPromptSummary,
         setScene: ghSetScene,

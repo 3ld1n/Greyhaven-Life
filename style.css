@@ -1438,3 +1438,116 @@ dialog#gh-life-schedule-dialog::backdrop {
 #gh-life-dialog .gh-life-person-actions .gh-life-danger-text {
     margin-left: auto;
 }
+
+/* =========================================================
+   v1.1 — physical scene presence
+   ========================================================= */
+
+.gh-life-card-badges {
+    flex: 0 0 auto;
+
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.gh-life-presence {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+
+    padding: 5px 7px;
+
+    border-radius: 999px;
+
+    font-size: 8.5px;
+    line-height: 1;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.gh-life-presence i {
+    font-size: 8px;
+}
+
+.gh-life-presence.is-present {
+    background: rgba(102, 194, 181, 0.14);
+    color: #aee9df;
+}
+
+.gh-life-presence.is-offscreen {
+    background: rgba(255, 255, 255, 0.055);
+    color: rgba(255, 255, 255, 0.50);
+}
+
+.gh-life-manage-person.is-offscreen {
+    background: rgba(255, 255, 255, 0.016);
+}
+
+.gh-life-manage-person.is-offscreen .gh-life-avatar {
+    opacity: 0.78;
+}
+
+.gh-life-inline-add-persona {
+    min-height: 44px;
+
+    padding: 8px 9px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 11px;
+
+    background: rgba(102, 194, 181, 0.055);
+    color: var(--gh-life-muted);
+
+    font-size: 10px;
+    line-height: 1.3;
+}
+
+.gh-life-inline-add-persona strong {
+    color: var(--gh-life-text);
+}
+
+.gh-life-inline-add-persona button {
+    flex: 0 0 auto;
+
+    min-height: 34px;
+
+    margin: 0 !important;
+    padding: 6px 10px !important;
+
+    border: 1px solid rgba(102, 194, 181, 0.24) !important;
+    border-radius: 10px !important;
+
+    background: var(--gh-life-accent-soft) !important;
+    color: #dff8f4 !important;
+
+    font-size: 10px !important;
+}
+
+@media screen and (max-width: 520px) {
+    .gh-life-card-badges {
+        gap: 3px;
+    }
+
+    .gh-life-presence {
+        padding: 4px 6px;
+        font-size: 8px;
+    }
+
+    .gh-life-inline-add-persona {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .gh-life-inline-add-persona button {
+        width: 100%;
+    }
+}
+
