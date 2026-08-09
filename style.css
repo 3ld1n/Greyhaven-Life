@@ -1432,3 +1432,9 @@ dialog#gh-life-schedule-dialog::backdrop {
         transition: none !important;
     }
 }
+
+
+/* v1.0.1 — off-screen person removal */
+#gh-life-dialog .gh-life-person-actions .gh-life-danger-text {
+    margin-left: auto;
+}

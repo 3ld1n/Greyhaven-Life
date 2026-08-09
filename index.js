@@ -255,8 +255,20 @@ function ghPersistState(state, { emit = true, render = true, reason = 'state' } 
     const normalized = ghNormalizeState(state);
 
     try {
+        if (ctx.chatMetadata) {
+            ctx.chatMetadata[GH_META_KEY] = normalized;
+        }
+
+        // Keep compatibility with current SillyTavern helpers when available.
         ctx.updateChatMetadata?.({ [GH_META_KEY]: normalized });
-        ctx.saveMetadataDebounced?.();
+
+        if (typeof ctx.saveMetadataDebounced === 'function') {
+            ctx.saveMetadataDebounced();
+        } else if (typeof ctx.saveMetadata === 'function') {
+            Promise.resolve(ctx.saveMetadata()).catch(error => {
+                console.error(`[${GH_MODULE}] saveMetadata failed`, error);
+            });
+        }
     } catch (error) {
         console.error(`[${GH_MODULE}] Failed to save metadata`, error);
     }
@@ -572,10 +584,15 @@ function ghCurrentParticipantIds() {
     if (ctx.groupId) {
         const group = ctx.groups?.find(group => String(group.id) === String(ctx.groupId));
         if (group?.members?.length) {
+            const disabled = new Set(Array.isArray(group.disabled_members) ? group.disabled_members : []);
+
             for (const memberAvatar of group.members) {
                 const avatar = typeof memberAvatar === 'string' ? memberAvatar : memberAvatar?.avatar;
+                if (!avatar || disabled.has(avatar)) continue;
+
                 const character = ctx.characters?.find(item => item?.avatar === avatar);
                 if (!character) continue;
+
                 const id = ghPersonIdFromCharacter(character);
                 if (state.people[id]) ids.add(id);
             }
@@ -647,8 +664,12 @@ function ghEnsureCurrentParticipants({ save = true } = {}) {
     if (ctx.groupId) {
         const group = ctx.groups?.find(group => String(group.id) === String(ctx.groupId));
         if (group?.members?.length) {
+            const disabled = new Set(Array.isArray(group.disabled_members) ? group.disabled_members : []);
+
             for (const member of group.members) {
                 const avatar = typeof member === 'string' ? member : member?.avatar;
+                if (!avatar || disabled.has(avatar)) continue;
+
                 const characterId = ctx.characters?.findIndex(item => item?.avatar === avatar);
                 if (characterId === undefined || characterId < 0) continue;
 
@@ -1098,9 +1119,13 @@ function ghRenderPeopleTab() {
     const date = ghGetCurrentTime(state);
     const people = ghGetTrackedPeople();
     const ctx = ghCtx();
+    const currentParticipantIds = new Set(ghCurrentParticipantIds());
 
     const cards = people.map(person => {
         const resolved = ghResolvePerson(person, date);
+        const canRemove =
+            person.source === 'custom' ||
+            (person.source === 'character' && !currentParticipantIds.has(person.id));
 
         return `
             <div class="gh-life-manage-person">
@@ -1122,7 +1147,7 @@ function ghRenderPeopleTab() {
                     <button type="button" data-gh-toggle-pin="${ghEscape(person.id)}" class="${person.pinContext ? 'active' : ''}">
                         <i class="fa-solid fa-thumbtack"></i> ${person.pinContext ? 'Pinned to AI' : 'Pin to AI'}
                     </button>
-                    ${person.source === 'custom' ? `<button type="button" class="gh-life-danger-text" data-gh-delete-person="${ghEscape(person.id)}">Remove</button>` : ''}
+                    ${canRemove ? `<button type="button" class="gh-life-danger-text" data-gh-delete-person="${ghEscape(person.id)}">Remove</button>` : ''}
                 </div>
             </div>
         `;
@@ -1803,32 +1828,64 @@ function ghOpenScheduleEditor(personId, scheduleId = null) {
 
     dialog.querySelector('[data-gh-schedule-save]').addEventListener('click', () => {
         const days = [...dialog.querySelectorAll('.gh-life-day-chip input:checked')]
-            .map(input => Number(input.value));
+            .map(input => Number(input.value))
+            .filter(day => Number.isInteger(day) && day >= 0 && day <= 6);
 
         if (!days.length) {
             globalThis.toastr?.warning?.('Choose at least one day.');
             return;
         }
 
-        entry.label = dialog.querySelector('#gh-schedule-label').value.trim();
-        entry.days = days;
-        entry.start = dialog.querySelector('#gh-schedule-start').value || '09:00';
-        entry.end = dialog.querySelector('#gh-schedule-end').value || '17:00';
-        entry.location = dialog.querySelector('#gh-schedule-location').value.trim();
-        entry.availability = dialog.querySelector('#gh-schedule-availability').value;
-        entry.status = dialog.querySelector('#gh-schedule-status').value.trim();
-        entry.priority = Number(dialog.querySelector('#gh-schedule-priority').value || 0);
-        entry.notes = dialog.querySelector('#gh-schedule-notes').value.trim();
+        const savedEntry = {
+            id: entry.id || ghUuid(),
+            label: dialog.querySelector('#gh-schedule-label')?.value.trim() || '',
+            days,
+            start: dialog.querySelector('#gh-schedule-start')?.value || '09:00',
+            end: dialog.querySelector('#gh-schedule-end')?.value || '17:00',
+            location: dialog.querySelector('#gh-schedule-location')?.value.trim() || '',
+            availability: dialog.querySelector('#gh-schedule-availability')?.value || 'busy',
+            status: dialog.querySelector('#gh-schedule-status')?.value.trim() || '',
+            priority: Number(dialog.querySelector('#gh-schedule-priority')?.value || 0),
+            notes: dialog.querySelector('#gh-schedule-notes')?.value.trim() || '',
+        };
 
-        const index = person.schedule.findIndex(item => item.id === entry.id);
-        if (index >= 0) {
-            person.schedule[index] = entry;
-        } else {
-            person.schedule.push(entry);
+        let saved = false;
+
+        ghMutate(draft => {
+            const currentPerson = draft.people?.[personId];
+            if (!currentPerson) return;
+
+            if (!Array.isArray(currentPerson.schedule)) {
+                currentPerson.schedule = [];
+            }
+
+            const index = currentPerson.schedule.findIndex(item => item.id === savedEntry.id);
+            if (index >= 0) {
+                currentPerson.schedule[index] = ghClone(savedEntry);
+            } else {
+                currentPerson.schedule.push(ghClone(savedEntry));
+            }
+
+            saved = true;
+        }, 'schedule');
+
+        if (!saved) {
+            globalThis.toastr?.error?.('Could not save this schedule. The tracked person is no longer available.');
+            return;
         }
 
-        ghPersistState(state, { reason: 'schedule' });
         close();
+
+        // Force an immediate refresh after the sub-dialog disappears so the
+        // newly added block is visible without switching tabs.
+        window.setTimeout(() => {
+            const main = document.querySelector('#gh-life-dialog');
+            if (main?.open) ghRenderMainDialog();
+        }, 0);
+
+        globalThis.toastr?.success?.(
+            scheduleId ? 'Schedule updated.' : 'Schedule added.'
+        );
     });
 
     document.body.appendChild(dialog);
@@ -2014,8 +2071,9 @@ function ghHandleMainDialogClick(event) {
         const id = target.dataset.ghDeletePerson;
         const name = ghGetState()?.people?.[id]?.name || 'this person';
 
-        if (globalThis.confirm?.(`Remove ${name} from Greyhaven Life in this chat?`)) {
+        if (globalThis.confirm?.(`Remove ${name} from Greyhaven Life in this chat?\n\nTheir Life location, status, overrides, and schedules for this chat will be removed. You can add them again later.`)) {
             ghDeletePerson(id);
+            globalThis.toastr?.success?.(`${name} removed from this chat's Life tracker.`);
         }
         return;
     }

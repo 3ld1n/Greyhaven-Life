@@ -249,3 +249,12 @@ This version relies on APIs exposed in current SillyTavern context including:
 7. Open AI Context Preview to verify what the model will receive.
 8. Send a normal roleplay message and confirm the character naturally respects
    the current time/location without reciting the metadata.
+
+## v1.0.1 fixes
+
+- Fixed recurring schedules sometimes closing the editor without actually being added.
+- Schedule saves now update a fresh copy of the current chat state by person ID and immediately refresh the Schedules screen.
+- Added **Remove** for tracked characters who are no longer currently present in the chat.
+- The active persona and currently present chat characters are protected from accidental removal.
+- Muted/disabled group members are no longer treated as currently present for auto-detection.
+- Improved chat-metadata persistence fallback for SillyTavern versions exposing different metadata save helpers.
