@@ -1,5 +1,5 @@
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.2.1';
+const GH_VERSION = '1.2.2';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -2234,10 +2234,30 @@ function ghGetChatScenarioText() {
 
     let text = '';
 
-    if (ctx.groupId) {
+    /*
+       SillyTavern's current per-chat "Character Settings Override > Scenario"
+       lives in chat metadata as `scenario`. This must be checked FIRST for
+       both solo and group chats, because it is the exact chat-specific setup
+       the user sees and edits in the override panel.
+    */
+    const chatScenario = String(ctx.chatMetadata?.scenario || '').trim();
+    if (chatScenario) {
+        text = chatScenario;
+    }
+
+    // Fallbacks only apply when the current chat has no explicit override.
+    if (!text && ctx.groupId) {
         const group = ctx.groups?.find(item => String(item?.id) === String(ctx.groupId));
-        text = String(group?.scenario || group?.description || '').trim();
-    } else {
+
+        // Keep a legacy/group-field fallback for older/custom SillyTavern builds,
+        // but do NOT treat the group's description as the scenario.
+        const legacyGroupScenario = String(group?.scenario || '').trim();
+        if (legacyGroupScenario) {
+            text = legacyGroupScenario;
+        }
+    }
+
+    if (!text && !ctx.groupId) {
         try {
             const fields = ctx.getCharacterCardFields?.();
             const scenario = fields?.scenario || fields?.data?.scenario;
@@ -2506,8 +2526,9 @@ async function ghAnalyzeCurrentChat() {
     const systemPrompt = `You are Greyhaven Life's conservative world-state extractor for a realistic roleplay.
 Return ONLY one valid JSON object. Do not write markdown.
 You are not a storyteller. Never invent a location, action, availability, or presence just to fill a field.
-Use strong recent evidence. The scenario/setup may establish the initial premise, but newer roleplay overrides it.
-If a field cannot be established, return an empty string or "unchanged" so existing state can be preserved.
+Use strong recent evidence. The CHAT-SPECIFIC SCENARIO / SETUP is strong world-state evidence. Treat its stated location, participants, and current activity as true unless newer roleplay explicitly changes them.
+Newer roleplay overrides conflicting scenario details, but silence does NOT erase the scenario.
+If a field cannot be established from the scenario, newer roleplay, or existing state, return an empty string or "unchanged" so existing state can be preserved.
 "present" means physically in the current scene. "offscreen" means not physically there.
 Availability must be one of: available, limited, busy, unavailable, sleeping, unknown, unchanged.
 Confidence must be high, medium, or low.
@@ -2515,8 +2536,8 @@ Do not alter or infer recurring schedules; only infer current actual world state
 
     const prompt = `AUTHORITATIVE CURRENT RP TIME: ${exactTime} on ${exactDate}.
 
-CHAT / GROUP SCENARIO:
-${scenario || '(No explicit scenario provided.)'}
+CHAT-SPECIFIC SCENARIO / SETUP:
+${scenario || '(No explicit chat scenario override or character scenario is available.)'}
 
 EXISTING GREYHAVEN LIFE STATE:
 ${JSON.stringify(existingState)}
@@ -2550,8 +2571,10 @@ Required JSON shape:
 }
 
 Rules:
-- Include tracked people when recent evidence updates them.
-- You may include an untracked named SillyTavern character only if the recent roleplay clearly establishes their current state.
+- Treat explicit scenario statements as valid evidence even if the recent transcript does not repeat them.
+- Example: if the scenario says "Aurora is at the cafe near the gym with Marcus" and no newer message moves either person, infer that cafe as the current scene/location and both as present.
+- Include tracked people when the scenario or recent evidence updates them.
+- You may include an untracked named SillyTavern character if the scenario OR recent roleplay clearly establishes their current state.
 - No evidence means preserve: use empty strings / unchanged, not guesses.
 - If somebody left the room/scene, mark offscreen.
 - If somebody arrived, mark present.

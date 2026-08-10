@@ -288,3 +288,12 @@ This release fixes the v1.2.0 startup regression.
 - Added defensive initialization error handling so a future startup failure is visible in the console/toast instead of silently disappearing.
 - Replaced the whole-document MutationObserver with an observer scoped only to SillyTavern's Extensions menu. This prevents Greyhaven Life from reacting to every chat-message or popup DOM mutation and reduces unnecessary UI lag.
 - All v1.2 features remain unchanged: global default schedules, obligations, exceptions, actual-vs-expected state, Analyze Current Chat, and shared World Snapshot.
+
+## v1.2.2 hotfix — Chat Scenario Override analysis
+
+- Fixed **Analyze Current Chat** so it reads SillyTavern's actual per-chat **Chat Character Settings Override → Scenario** value from `chatMetadata.scenario`.
+- The chat-specific scenario is now checked before character-card or legacy fallbacks.
+- Group descriptions are no longer mistaken for roleplay scenarios.
+- The analyzer now treats explicit scenario/setup facts as strong evidence until newer roleplay contradicts them.
+- Scenario-only characters can be proposed as present even if their names have not yet appeared in the recent transcript.
+- All schedules, obligations, exceptions, global defaults, presence logic, and World Snapshot behavior are unchanged.
