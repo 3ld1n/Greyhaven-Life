@@ -1,5 +1,5 @@
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.2.0';
+const GH_VERSION = '1.2.1';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -4372,12 +4372,24 @@ function ghBuildMenuEntry() {
 function ghObserveMenu() {
     if (ghMenuObserver) return;
 
+    const menu = document.querySelector('#extensionsMenu');
+    if (!menu) return;
+
+    let refreshQueued = false;
+
     ghMenuObserver = new MutationObserver(() => {
-        ghBuildMenuEntry();
-        ghEnsureCharacterManagementButton();
+        if (refreshQueued) return;
+        refreshQueued = true;
+
+        requestAnimationFrame(() => {
+            refreshQueued = false;
+            ghBuildMenuEntry();
+        });
     });
 
-    ghMenuObserver.observe(document.body, { childList: true, subtree: true });
+    // Only watch the actual extensions menu. Watching the entire document
+    // subtree made every new chat message / popup mutation wake Greyhaven Life.
+    ghMenuObserver.observe(menu, { childList: true });
 }
 
 function ghEmitChange(reason = 'state') {
@@ -4661,31 +4673,49 @@ async function ghInit() {
         return;
     }
 
-    ghInitialized = true;
-    document.body.classList.add('gh-life-active');
+    try {
+        document.body.classList.add('gh-life-active');
 
-    ghGetSettings();
-    ghBuildMenuEntry();
-    ghObserveMenu();
-    ghBuildHud();
-    ghBuildMainDialog();
-    ghExposeApi();
-    ghBindEvents();
-    ghStartClock();
-    ghEnsureCharacterManagementButton();
+        ghGetSettings();
+        ghBuildMenuEntry();
+        ghObserveMenu();
+        ghBuildHud();
+        ghBuildMainDialog();
+        ghExposeApi();
+        ghBindEvents();
+        ghStartClock();
+        ghEnsureCharacterManagementButton();
 
-    ghHandleChatChanged();
+        ghHandleChatChanged();
 
-    // SillyTavern and other extensions can rebuild navigation shortly after
-    // startup, so re-check our lightweight integration points.
-    [250, 900, 2200].forEach(delay => {
-        window.setTimeout(() => {
-            ghBuildMenuEntry();
-            ghEnsureCharacterManagementButton();
-            ghUpdateHud();
-        }, delay);
-    });
+        ghInitialized = true;
 
-    ghLog(`Greyhaven Life v${GH_VERSION} loaded.`);
+        // SillyTavern and other extensions can rebuild navigation shortly after
+        // startup, so re-check our lightweight integration points.
+        [250, 900, 2200].forEach(delay => {
+            window.setTimeout(() => {
+                ghBuildMenuEntry();
+                ghEnsureCharacterManagementButton();
+                ghUpdateHud();
+            }, delay);
+        });
+
+        ghLog(`Greyhaven Life v${GH_VERSION} loaded.`);
+    } catch (error) {
+        ghInitialized = false;
+        console.error(`[${GH_MODULE}] Initialization failed`, error);
+
+        try {
+            globalThis.toastr?.error?.(
+                'Greyhaven Life failed to initialize. Check the browser console.'
+            );
+        } catch {}
+    }
 }
+
+// Third-party SillyTavern extensions must self-initialize.
+// v1.2.0 accidentally omitted this call, so none of its UI was created.
+void ghInit().catch(error => {
+    console.error(`[${GH_MODULE}] Boot failed`, error);
+});
 

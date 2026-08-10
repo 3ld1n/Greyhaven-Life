@@ -279,3 +279,12 @@ Repository root:
     README.md
 
 Minimum SillyTavern client version remains 1.13.3.
+
+## v1.2.1 hotfix
+
+This release fixes the v1.2.0 startup regression.
+
+- Restored the missing self-initialization call at the end of `index.js`.
+- Added defensive initialization error handling so a future startup failure is visible in the console/toast instead of silently disappearing.
+- Replaced the whole-document MutationObserver with an observer scoped only to SillyTavern's Extensions menu. This prevents Greyhaven Life from reacting to every chat-message or popup DOM mutation and reduces unnecessary UI lag.
+- All v1.2 features remain unchanged: global default schedules, obligations, exceptions, actual-vs-expected state, Analyze Current Chat, and shared World Snapshot.
