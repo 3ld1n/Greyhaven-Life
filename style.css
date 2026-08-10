@@ -1551,3 +1551,442 @@ dialog#gh-life-schedule-dialog::backdrop {
     }
 }
 
+
+
+/* =========================================================
+   v1.2 — obligations, defaults, exceptions & world analysis
+   ========================================================= */
+
+.gh-life-schedule-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.gh-life-schedule-kind {
+    flex: 0 0 auto;
+
+    padding: 4px 7px;
+    border-radius: 999px;
+
+    background: rgba(255, 255, 255, 0.055);
+    color: rgba(255, 255, 255, 0.52);
+
+    font-size: 8px;
+    line-height: 1;
+    font-weight: 750;
+    text-transform: uppercase;
+    letter-spacing: 0.25px;
+}
+
+.gh-life-schedule-kind.is-obligation {
+    background: rgba(229, 174, 76, 0.13);
+    color: #f2ce85;
+}
+
+.gh-life-heading-actions,
+.gh-life-default-sync-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.gh-life-default-sync-row {
+    margin: 8px 0 10px;
+}
+
+.gh-life-default-sync-row button {
+    min-height: 31px;
+
+    margin: 0 !important;
+    padding: 5px 8px !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 9px !important;
+
+    background: rgba(255, 255, 255, 0.025) !important;
+    color: rgba(255, 255, 255, 0.64) !important;
+
+    font-size: 8.5px !important;
+}
+
+.gh-life-subsection-heading {
+    margin-top: 12px;
+    padding-top: 10px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    border-top: 1px solid var(--gh-life-border);
+}
+
+.gh-life-subsection-heading > div {
+    min-width: 0;
+}
+
+.gh-life-subsection-heading strong {
+    display: block;
+
+    color: rgba(255, 255, 255, 0.82);
+    font-size: 10px;
+    line-height: 1.2;
+}
+
+.gh-life-subsection-heading small {
+    display: block;
+    margin-top: 2px;
+
+    color: var(--gh-life-muted);
+    font-size: 8.5px;
+    line-height: 1.3;
+}
+
+.gh-life-exception-list {
+    margin-top: 7px;
+
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gh-life-exception-card {
+    padding: 8px 9px;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 11px;
+
+    background: rgba(255, 255, 255, 0.018);
+}
+
+.gh-life-exception-card.is-active {
+    border-color: rgba(102, 194, 181, 0.22);
+    background: rgba(102, 194, 181, 0.055);
+}
+
+.gh-life-exception-title {
+    color: rgba(255, 255, 255, 0.80);
+    font-size: 9.5px;
+    font-weight: 700;
+}
+
+.gh-life-exception-title span {
+    margin-left: 5px;
+    padding: 3px 5px;
+
+    border-radius: 999px;
+
+    background: rgba(102, 194, 181, 0.14);
+    color: #aee9df;
+
+    font-size: 7.5px;
+    text-transform: uppercase;
+}
+
+.gh-life-exception-time,
+.gh-life-exception-meta {
+    margin-top: 2px;
+
+    color: var(--gh-life-muted);
+    font-size: 8.5px;
+    line-height: 1.35;
+}
+
+.gh-life-empty-compact {
+    padding: 10px;
+}
+
+.gh-life-obligation-cue {
+    width: fit-content;
+    max-width: 100%;
+
+    margin-top: 4px;
+    padding: 4px 6px;
+
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+
+    border-radius: 7px;
+
+    background: rgba(229, 174, 76, 0.10);
+    color: #e7c87f;
+
+    font-size: 7.8px;
+    line-height: 1.2;
+    font-weight: 650;
+}
+
+.gh-life-obligation-cue.is-late,
+.gh-life-obligation-cue.is-missed {
+    background: rgba(221, 108, 92, 0.12);
+    color: #f0a094;
+}
+
+.gh-life-analysis-card {
+    border-color: rgba(102, 194, 181, 0.16);
+}
+
+.gh-life-analysis-card .gh-life-section-title i {
+    margin-right: 5px;
+    color: var(--gh-life-accent);
+}
+
+.gh-life-snapshot-status {
+    margin: 8px 0;
+    padding: 7px 9px;
+
+    display: flex;
+    align-items: center;
+    gap: 7px;
+
+    border-radius: 10px;
+
+    background: rgba(255, 255, 255, 0.025);
+    color: var(--gh-life-muted);
+
+    font-size: 9px;
+    line-height: 1.3;
+}
+
+.gh-life-snapshot-status.is-fresh {
+    background: rgba(102, 194, 181, 0.065);
+    color: #aee9df;
+}
+
+.gh-life-snapshot-status.is-stale i {
+    color: #e7c87f;
+}
+
+.gh-life-muted-note {
+    display: block;
+    margin-top: 7px;
+
+    color: var(--gh-life-muted);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+dialog#gh-life-exception-dialog,
+dialog#gh-life-default-schedule-dialog,
+dialog#gh-life-default-profile-dialog,
+dialog#gh-life-analysis-dialog {
+    width: min(650px, calc(100vw - 24px)) !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: min(86dvh, 760px) !important;
+
+    margin: auto !important;
+    padding: 0 !important;
+
+    overflow: hidden !important;
+
+    border: 1px solid var(--gh-life-border) !important;
+    border-radius: 20px !important;
+    outline: 0 !important;
+
+    background: #15181d !important;
+    color: var(--gh-life-text) !important;
+
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62) !important;
+}
+
+dialog#gh-life-exception-dialog::backdrop,
+dialog#gh-life-default-schedule-dialog::backdrop,
+dialog#gh-life-default-profile-dialog::backdrop,
+dialog#gh-life-analysis-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.72) !important;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+}
+
+.gh-life-default-profile {
+    max-height: min(86dvh, 760px);
+}
+
+.gh-life-analysis-preview {
+    max-height: min(86dvh, 760px);
+}
+
+.gh-life-analysis-summary {
+    margin-bottom: 10px;
+    padding: 9px 10px;
+
+    border: 1px solid rgba(102, 194, 181, 0.15);
+    border-radius: 11px;
+
+    background: rgba(102, 194, 181, 0.05);
+    color: rgba(255, 255, 255, 0.78);
+
+    font-size: 9.5px;
+    line-height: 1.45;
+}
+
+.gh-life-analysis-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.gh-life-analysis-people-title {
+    margin-top: 12px;
+}
+
+.gh-life-analysis-row {
+    min-height: 54px;
+
+    padding: 8px 9px;
+
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+
+    border: 1px solid var(--gh-life-border);
+    border-radius: 11px;
+
+    background: rgba(255, 255, 255, 0.018);
+}
+
+.gh-life-analysis-row.is-disabled {
+    opacity: 0.55;
+}
+
+.gh-life-analysis-row > input {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+}
+
+.gh-life-analysis-row-main {
+    min-width: 0;
+}
+
+.gh-life-analysis-row-main strong,
+.gh-life-analysis-row-main span,
+.gh-life-analysis-row-main small {
+    display: block;
+}
+
+.gh-life-analysis-row-main strong {
+    color: rgba(255, 255, 255, 0.87);
+    font-size: 10px;
+}
+
+.gh-life-analysis-row-main span {
+    margin-top: 2px;
+
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 9px;
+    line-height: 1.3;
+}
+
+.gh-life-analysis-row-main small {
+    margin-top: 3px;
+
+    color: var(--gh-life-muted);
+    font-size: 8px;
+    line-height: 1.35;
+}
+
+.gh-life-confidence {
+    padding: 4px 6px;
+
+    border-radius: 999px;
+
+    font-size: 7.5px;
+    line-height: 1;
+    font-weight: 750;
+    text-transform: uppercase;
+}
+
+.gh-life-confidence.is-high {
+    background: rgba(102, 194, 181, 0.12);
+    color: #aee9df;
+}
+
+.gh-life-confidence.is-medium {
+    background: rgba(229, 174, 76, 0.11);
+    color: #e7c87f;
+}
+
+.gh-life-confidence.is-low {
+    background: rgba(255, 255, 255, 0.055);
+    color: rgba(255, 255, 255, 0.42);
+}
+
+#gh-life-character-defaults-button {
+    width: 100% !important;
+    min-height: 38px !important;
+
+    margin: 8px 0 10px !important;
+    padding: 7px 10px !important;
+
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 7px !important;
+
+    border: 1px solid rgba(102, 194, 181, 0.18) !important;
+    border-radius: 10px !important;
+
+    background: rgba(102, 194, 181, 0.06) !important;
+    color: #c5f0e9 !important;
+
+    font-size: 11px !important;
+}
+
+#gh-life-character-defaults-button:disabled {
+    opacity: 0.35 !important;
+}
+
+.gh-life-analysis-settings {
+    margin-top: 9px;
+}
+
+@media screen and (max-width: 600px) {
+    dialog#gh-life-exception-dialog,
+    dialog#gh-life-default-schedule-dialog,
+    dialog#gh-life-default-profile-dialog,
+    dialog#gh-life-analysis-dialog {
+        width: calc(100vw - 18px) !important;
+        max-width: calc(100vw - 18px) !important;
+        max-height: calc(100dvh - max(22px, env(safe-area-inset-top)) - max(22px, env(safe-area-inset-bottom))) !important;
+
+        border-radius: 20px !important;
+    }
+
+    .gh-life-heading-actions {
+        justify-content: flex-end;
+    }
+
+    .gh-life-default-sync-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .gh-life-default-sync-row button:last-child {
+        grid-column: 1 / -1;
+    }
+
+    .gh-life-exception-card {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .gh-life-analysis-row {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .gh-life-analysis-row .gh-life-confidence {
+        grid-column: 2;
+        justify-self: start;
+    }
+}
