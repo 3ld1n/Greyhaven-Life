@@ -297,3 +297,53 @@ This release fixes the v1.2.0 startup regression.
 - The analyzer now treats explicit scenario/setup facts as strong evidence until newer roleplay contradicts them.
 - Scenario-only characters can be proposed as present even if their names have not yet appeared in the recent transcript.
 - All schedules, obligations, exceptions, global defaults, presence logic, and World Snapshot behavior are unchanged.
+
+## v1.3.0 — schedule memory + precise locations
+
+This version is intended as a stable refinement release.
+
+### Precise locations
+Greyhaven Life now separates:
+- **Place / venue** — apartment, hospital, cafe, hotel room, park
+- **City / area** — Greyhaven, Vienna, Greece, etc.
+
+Old v1.2 location strings are preserved automatically as the place field, so existing chats remain compatible.
+
+The structured location is supported in:
+- current scene
+- person last-known state
+- temporary overrides
+- recurring schedules
+- global default schedules
+- Analyze Current Chat
+- World Snapshot / public API
+
+Leaving both schedule location fields blank makes a routine **portable**. This is ideal for sleep, morning routines, yoga, etc. A fixed-location routine such as jogging at Greyhaven Park is not assumed while the character is on an incompatible vacation/trip.
+
+### Schedule timing awareness
+The prompt now includes the exact time window and end time of the current scheduled block, plus the next two plausible schedule blocks within roughly 18 hours.
+
+Example:
+- Hospital Shift 08:00–16:00 — scheduled end exactly 16:00
+- Gym 18:00–19:00 — next likely plan
+
+These are continuity cues, not forced actions.
+
+### Past routine / obligation memory
+When the newest user message asks about a past time (for example, "Where were you from 10 am to 11 today?"), Greyhaven Life locally detects the requested time and injects the matching routine/obligation as the **default expected memory**.
+
+Rules:
+- explicit roleplay history overrides the routine
+- stronger Greyhaven Life state overrides the routine
+- if another activity is established, the character can naturally say the routine was skipped
+- excused obligations are not assumed
+- fixed-location routines are not assumed during incompatible vacation/travel
+- location-free routines remain portable and can still happen away from home
+
+No extra model request is used for this schedule memory.
+
+### Analyzer precision
+Analyze Current Chat now asks the model to separate specific venue from city/area when the evidence supports it.
+
+### Future Phone support
+The public Greyhaven Life API now exposes current and upcoming schedule occurrences for future Phone/Snap Map integration.

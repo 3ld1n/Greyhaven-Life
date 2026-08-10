@@ -1990,3 +1990,14 @@ dialog#gh-life-analysis-dialog::backdrop {
         justify-self: start;
     }
 }
+
+
+/* v1.3.0 — structured location fields */
+@media screen and (max-width: 1000px) {
+    #gh-life-dialog .gh-life-form-grid label small,
+    #gh-life-person-dialog .gh-life-form-grid label small,
+    #gh-life-schedule-dialog .gh-life-form-grid label small,
+    #gh-life-default-schedule-dialog .gh-life-form-grid label small {
+        line-height: 1.35;
+    }
+}

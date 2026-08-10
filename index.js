@@ -1,5 +1,5 @@
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.2.2';
+const GH_VERSION = '1.3.0';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -159,6 +159,7 @@ function ghDefaultState() {
         scene: {
             label: '',
             location: '',
+            area: '',
             notes: '',
             sinceMs: Date.now(),
         },
@@ -189,6 +190,7 @@ function ghNormalizePerson(person) {
 
     safe.base ||= {};
     safe.base.location ||= '';
+    safe.base.area ||= '';
     safe.base.status ||= '';
     safe.base.availability ||= 'unknown';
     safe.base.notes ||= '';
@@ -197,6 +199,7 @@ function ghNormalizePerson(person) {
     safe.override ||= {};
     safe.override.enabled ??= false;
     safe.override.location ||= '';
+    safe.override.area ||= '';
     safe.override.status ||= '';
     safe.override.availability ||= 'inherit';
     safe.override.untilMs ??= null;
@@ -216,6 +219,7 @@ function ghNormalizePerson(person) {
         item.start ||= '09:00';
         item.end ||= '17:00';
         item.location ||= '';
+        item.area ||= '';
         item.status ||= '';
         item.availability ||= 'busy';
         item.priority = Number.isFinite(Number(item.priority)) ? Number(item.priority) : 0;
@@ -247,7 +251,7 @@ function ghNormalizePerson(person) {
 function ghNormalizeState(raw) {
     const state = raw && typeof raw === 'object' ? raw : ghDefaultState();
 
-    state.version = Math.max(3, Number(state.version || 1));
+    state.version = Math.max(4, Number(state.version || 1));
     state.createdAt ||= Date.now();
     state.updatedAt ||= Date.now();
 
@@ -261,6 +265,7 @@ function ghNormalizeState(raw) {
     state.scene ||= {};
     state.scene.label ||= '';
     state.scene.location ||= '';
+    state.scene.area ||= '';
     state.scene.notes ||= '';
     state.scene.sinceMs = Number.isFinite(Number(state.scene.sinceMs)) ? Number(state.scene.sinceMs) : Date.now();
 
@@ -561,6 +566,7 @@ function ghNormalizeDefaultSchedule(entry) {
     item.start ||= '09:00';
     item.end ||= '17:00';
     item.location ||= '';
+    item.area ||= '';
     item.status ||= '';
     item.availability ||= 'busy';
     item.priority = Number.isFinite(Number(item.priority)) ? Number(item.priority) : 0;
@@ -793,6 +799,54 @@ function ghLocationsMatch(a, b) {
     return aa === bb || aa.includes(bb) || bb.includes(aa);
 }
 
+
+function ghFormatLocation(location = '', area = '') {
+    const place = String(location || '').trim();
+    const region = String(area || '').trim();
+
+    if (place && region) {
+        if (ghLocationsMatch(place, region)) return place;
+        return `${place} · ${region}`;
+    }
+
+    return place || region || '';
+}
+
+function ghAreaMatches(a, b) {
+    const aa = ghLocationComparable(a);
+    const bb = ghLocationComparable(b);
+    if (!aa || !bb) return false;
+    return aa === bb || aa.includes(bb) || bb.includes(aa);
+}
+
+function ghStructuredLocationConflicts(actualLocation, actualArea, expectedLocation, expectedArea) {
+    const aPlace = String(actualLocation || '').trim();
+    const aArea = String(actualArea || '').trim();
+    const ePlace = String(expectedLocation || '').trim();
+    const eArea = String(expectedArea || '').trim();
+
+    // A known city/area mismatch is the strongest travel conflict.
+    if (aArea && eArea && !ghAreaMatches(aArea, eArea)) return true;
+
+    // If both exact places are known, a different place means the person is
+    // not currently at the scheduled venue even if both are in the same city.
+    if (aPlace && ePlace && !ghLocationsMatch(aPlace, ePlace)) return true;
+
+    return false;
+}
+
+function ghStructuredLocationMatches(actualLocation, actualArea, expectedLocation, expectedArea) {
+    if (ghStructuredLocationConflicts(actualLocation, actualArea, expectedLocation, expectedArea)) {
+        return false;
+    }
+
+    const hasAnyComparable =
+        (actualArea && expectedArea) ||
+        (actualLocation && expectedLocation);
+
+    return !!hasAnyComparable;
+}
+
 function ghGetActiveException(person, date = ghGetCurrentTime()) {
     if (!person?.exceptions?.length) return null;
 
@@ -836,6 +890,377 @@ function ghScheduleWindow(entry, startDate) {
     }
 
     return { start, end };
+}
+
+
+function ghScheduleOccurrence(entry, startDate) {
+    if (!entry?.days?.length) return null;
+
+    const dayStart = new Date(startDate);
+    dayStart.setHours(0, 0, 0, 0);
+    if (!entry.days.includes(dayStart.getDay())) return null;
+
+    const window = ghScheduleWindow(entry, dayStart);
+    return window ? { entry, start: window.start, end: window.end } : null;
+}
+
+function ghFindActiveScheduleOccurrence(person, date = ghGetCurrentTime()) {
+    const entry = ghFindActiveSchedule(person, date);
+    if (!entry) return null;
+
+    // An overnight block may have started yesterday.
+    for (const offset of [0, -1]) {
+        const day = new Date(date);
+        day.setDate(day.getDate() + offset);
+        const occurrence = ghScheduleOccurrence(entry, day);
+        if (!occurrence) continue;
+        if (date >= occurrence.start && date < occurrence.end) return occurrence;
+    }
+
+    return null;
+}
+
+function ghExceptionCoveringWindow(person, start, end) {
+    return (person?.exceptions || []).find(exception => {
+        const exceptionStart = Number(exception?.startMs || 0);
+        const exceptionEnd = exception?.endMs ? Number(exception.endMs) : Infinity;
+        return exceptionStart < end.getTime() && exceptionEnd > start.getTime();
+    }) || null;
+}
+
+function ghOverrideAtTime(person, date) {
+    const override = person?.override;
+    if (!override?.enabled) return null;
+
+    const at = date.getTime();
+    const since = Number(override.sinceMs || 0);
+    const until = override.untilMs ? Number(override.untilMs) : Infinity;
+
+    if (since && at < since) return null;
+    if (at >= until) return null;
+    return override;
+}
+
+function ghActualLocationEvidenceAt(person, date = ghGetCurrentTime()) {
+    const state = ghGetState({ create: false });
+    const at = date.getTime();
+    const override = ghOverrideAtTime(person, date);
+
+    if (override?.location || override?.area) {
+        return {
+            location: override.location || '',
+            area: override.area || '',
+            source: 'override',
+            sinceMs: Number(override.sinceMs || 0) || null,
+        };
+    }
+
+    if (
+        ghIsPersonPresent(person) &&
+        state?.scene &&
+        Number(state.scene.sinceMs || 0) <= at &&
+        (state.scene.location || state.scene.area)
+    ) {
+        return {
+            location: state.scene.location || '',
+            area: state.scene.area || '',
+            source: 'scene',
+            sinceMs: Number(state.scene.sinceMs || 0) || null,
+        };
+    }
+
+    if (
+        (person?.base?.location || person?.base?.area) &&
+        (!person.base.sinceMs || Number(person.base.sinceMs) <= at)
+    ) {
+        return {
+            location: person.base.location || '',
+            area: person.base.area || '',
+            source: 'base',
+            sinceMs: Number(person.base.sinceMs || 0) || null,
+        };
+    }
+
+    return { location: '', area: '', source: '', sinceMs: null };
+}
+
+function ghScheduleIsSuppressedForOccurrence(person, occurrence, { forHistorical = false } = {}) {
+    const exception = ghExceptionCoveringWindow(person, occurrence.start, occurrence.end);
+    const entry = occurrence.entry;
+
+    if (entry.type === 'obligation' && exception?.suppressObligations) {
+        return { suppressed: true, reason: ghExceptionLabel(exception), exception };
+    }
+
+    const actualAtStart = ghActualLocationEvidenceAt(person, occurrence.start);
+
+    // Location-flexible routines (sleeping, yoga, morning routine, etc.) can
+    // still happen while travelling because neither place nor city is fixed.
+    const locationSpecific = !!(entry.location || entry.area);
+
+    if (entry.type === 'routine' && locationSpecific) {
+        // A vacation/leave makes a fixed-location routine non-default unless
+        // the RP specifically establishes the character is still at that area.
+        if (exception && ['vacation', 'leave'].includes(exception.type)) {
+            if (
+                !actualAtStart.area ||
+                !entry.area ||
+                !ghAreaMatches(actualAtStart.area, entry.area)
+            ) {
+                return { suppressed: true, reason: ghExceptionLabel(exception), exception };
+            }
+        }
+
+        // Strong known travel state in another city/area beats a fixed routine.
+        if (
+            actualAtStart.area &&
+            entry.area &&
+            !ghAreaMatches(actualAtStart.area, entry.area)
+        ) {
+            return {
+                suppressed: true,
+                reason: `known to be in ${ghFormatLocation(actualAtStart.location, actualAtStart.area)}`,
+                exception,
+            };
+        }
+    }
+
+    return { suppressed: false, reason: '', exception };
+}
+
+function ghUpcomingScheduleOccurrences(person, date = ghGetCurrentTime(), horizonHours = 18) {
+    const now = date.getTime();
+    const endHorizon = now + Math.max(1, Number(horizonHours || 18)) * 60 * 60_000;
+    const items = [];
+
+    for (let offset = 0; offset <= 2; offset++) {
+        const day = new Date(date);
+        day.setHours(0, 0, 0, 0);
+        day.setDate(day.getDate() + offset);
+
+        for (const entry of person?.schedule || []) {
+            const occurrence = ghScheduleOccurrence(entry, day);
+            if (!occurrence) continue;
+
+            const startMs = occurrence.start.getTime();
+            if (startMs <= now || startMs > endHorizon) continue;
+
+            const suppression = ghScheduleIsSuppressedForOccurrence(person, occurrence);
+            if (suppression.suppressed) continue;
+
+            items.push({ ...occurrence, suppression });
+        }
+    }
+
+    return items
+        .sort((a, b) => {
+            const delta = a.start.getTime() - b.start.getTime();
+            if (delta) return delta;
+            return Number(b.entry.priority || 0) - Number(a.entry.priority || 0);
+        });
+}
+
+function ghMinutesUntil(date, now = ghGetCurrentTime()) {
+    return Math.max(0, Math.round((date.getTime() - now.getTime()) / 60_000));
+}
+
+function ghHumanDuration(minutes) {
+    const value = Math.max(0, Math.round(Number(minutes || 0)));
+    if (value < 60) return `${value}m`;
+    const hours = Math.floor(value / 60);
+    const rest = value % 60;
+    return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+function ghTimeTokenToMinutes(hourRaw, minuteRaw, ampmRaw) {
+    let hour = Number(hourRaw);
+    const minute = Number(minuteRaw || 0);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+
+    const ampm = String(ampmRaw || '').toLowerCase().replace(/\./g, '');
+    if (ampm) {
+        if (hour < 1 || hour > 12) return null;
+        if (ampm === 'am') {
+            if (hour === 12) hour = 0;
+        } else if (ampm === 'pm') {
+            if (hour !== 12) hour += 12;
+        } else {
+            return null;
+        }
+    } else if (hour < 0 || hour > 23) {
+        return null;
+    }
+
+    return hour * 60 + minute;
+}
+
+function ghParseScheduleQuestion(text, now = ghGetCurrentTime()) {
+    const raw = String(text || '');
+    const lower = raw.toLowerCase();
+
+    const scheduleWord =
+        /\b(schedule|shift|work|gym|jog|jogging|run|running|yoga|sleep|sleeping|routine|class|appointment|meeting|finish|finishes|finished|start|starts|started)\b/i.test(raw);
+
+    const historicalLanguage =
+        /\b(what|where|when)\b[\s\S]{0,45}\b(was|were|did)\b/i.test(raw) ||
+        /\bwhat (?:were|was) .*doing\b/i.test(raw) ||
+        /\bwhere (?:were|was)\b/i.test(raw) ||
+        /\b(from|between)\s+\d/i.test(raw) ||
+        /\b(this morning|earlier today|yesterday)\b/i.test(raw);
+
+    // Only parse bare numbers as times when the message is clearly temporal.
+    const tokenRegex = /\b([01]?\d|2[0-3])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b|\b([01]?\d|2[0-3]):([0-5]\d)\b/gi;
+    const times = [];
+    for (const match of raw.matchAll(tokenRegex)) {
+        const minutes = match[1] !== undefined
+            ? ghTimeTokenToMinutes(match[1], match[2], match[3])
+            : ghTimeTokenToMinutes(match[4], match[5], '');
+        if (minutes !== null) times.push(minutes);
+    }
+
+    let date = new Date(now);
+    date.setHours(0, 0, 0, 0);
+
+    if (/\byesterday\b/i.test(raw)) {
+        date.setDate(date.getDate() - 1);
+    } else {
+        const dayNames = [
+            ['sunday', 0], ['monday', 1], ['tuesday', 2], ['wednesday', 3],
+            ['thursday', 4], ['friday', 5], ['saturday', 6],
+        ];
+        const found = dayNames.find(([name]) => new RegExp(`\\b${name}\\b`, 'i').test(raw));
+        if (found) {
+            const wanted = found[1];
+            const delta = (date.getDay() - wanted + 7) % 7;
+            date.setDate(date.getDate() - delta);
+        }
+    }
+
+    const labelTerms = [...(personScheduleWordsFromText(raw))];
+
+    if (!historicalLanguage && !scheduleWord && !times.length) return null;
+
+    return {
+        raw,
+        lower,
+        historical: historicalLanguage && !!times.length,
+        times,
+        date,
+        labelTerms,
+        scheduleWord,
+    };
+}
+
+function personScheduleWordsFromText(text) {
+    const words = String(text || '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .split(/\s+/)
+        .filter(word => word.length >= 3);
+
+    const stop = new Set([
+        'what','when','where','were','was','did','you','your','the','and','from',
+        'today','yesterday','this','morning','schedule','time','will','finish',
+        'start','doing','usually','about','around',
+    ]);
+
+    return new Set(words.filter(word => !stop.has(word)));
+}
+
+function ghScheduleEntryMatchesQuestion(entry, query) {
+    if (!query?.labelTerms?.length) return false;
+    const haystack = `${entry.label || ''} ${entry.status || ''} ${entry.location || ''} ${entry.area || ''}`
+        .toLowerCase();
+    return query.labelTerms.some(word => haystack.includes(word));
+}
+
+function ghHistoricalScheduleContext(person, query, now = ghGetCurrentTime()) {
+    if (!query?.historical || !query.times?.length) return [];
+
+    const startMinute = query.times[0];
+    const endMinute = query.times.length > 1 ? query.times[1] : startMinute;
+
+    const rangeStart = new Date(query.date);
+    rangeStart.setHours(Math.floor(startMinute / 60), startMinute % 60, 0, 0);
+
+    const rangeEnd = new Date(query.date);
+    const effectiveEnd = endMinute === startMinute ? startMinute + 1 : endMinute;
+    rangeEnd.setHours(Math.floor((effectiveEnd % 1440) / 60), effectiveEnd % 60, 0, 0);
+    if (effectiveEnd <= startMinute) rangeEnd.setDate(rangeEnd.getDate() + 1);
+
+    const lines = [];
+
+    for (const entry of person?.schedule || []) {
+        for (const offset of [-1, 0]) {
+            const day = new Date(query.date);
+            day.setDate(day.getDate() + offset);
+            const occurrence = ghScheduleOccurrence(entry, day);
+            if (!occurrence) continue;
+
+            const overlaps =
+                occurrence.start.getTime() < rangeEnd.getTime() &&
+                occurrence.end.getTime() > rangeStart.getTime();
+            if (!overlaps) continue;
+
+            const suppression = ghScheduleIsSuppressedForOccurrence(person, occurrence, { forHistorical: true });
+            if (suppression.suppressed) continue;
+
+            const actual = ghActualLocationEvidenceAt(person, occurrence.start);
+            const conflict = ghStructuredLocationConflicts(
+                actual.location,
+                actual.area,
+                entry.location,
+                entry.area,
+            );
+
+            const where = ghFormatLocation(entry.location, entry.area);
+            const time = `${entry.start}–${entry.end}`;
+
+            if (conflict) {
+                lines.push(
+                    `${entry.label || 'Routine'} was the normal ${time} schedule${where ? ` at ${where}` : ''}, but stronger Life state points to ${ghFormatLocation(actual.location, actual.area)}. Treat the scheduled block as skipped/replaced unless chat history says otherwise.`
+                );
+            } else {
+                lines.push(
+                    `${entry.label || 'Routine'} was the normal ${time} schedule${where ? ` at ${where}` : ''}. If chat history does not establish a different activity, this is the most likely answer; if chat history does, use the real event and mention the routine was skipped only when relevant.`
+                );
+            }
+        }
+    }
+
+    return [...new Set(lines)];
+}
+
+function ghScheduleQuestionContext(person, query, now = ghGetCurrentTime()) {
+    if (!query) return [];
+
+    const lines = [];
+    const active = ghFindActiveScheduleOccurrence(person, now);
+
+    if (active) {
+        const suppression = ghScheduleIsSuppressedForOccurrence(person, active);
+        if (!suppression.suppressed) {
+            const where = ghFormatLocation(active.entry.location, active.entry.area);
+            const until = active.end;
+            lines.push(
+                `Current scheduled block: ${active.entry.label || 'Scheduled block'} runs ${active.entry.start}–${active.entry.end}${where ? ` at ${where}` : ''}; its scheduled end is exactly ${active.entry.end} (${ghHumanDuration(ghMinutesUntil(until, now))} from now).`
+            );
+        }
+    }
+
+    const matching = (person?.schedule || []).filter(entry => ghScheduleEntryMatchesQuestion(entry, query));
+    for (const entry of matching.slice(0, 4)) {
+        const where = ghFormatLocation(entry.location, entry.area);
+        lines.push(
+            `Named schedule: ${entry.label || 'Scheduled block'} — ${ghDaysSummary(entry.days)} ${entry.start}–${entry.end}${where ? ` at ${where}` : ''} (${ghScheduleTypeLabel(entry.type)}).`
+        );
+    }
+
+    for (const historical of ghHistoricalScheduleContext(person, query, now)) {
+        lines.push(`Historical schedule inference: ${historical}`);
+    }
+
+    return [...new Set(lines)];
 }
 
 
@@ -901,35 +1326,7 @@ function ghGetRelevantObligation(person, date = ghGetCurrentTime()) {
 }
 
 function ghActualLocationEvidence(person, date = ghGetCurrentTime()) {
-    const state = ghGetState({ create: false });
-    const present = ghIsPersonPresent(person);
-    const override = ghOverrideIsActive(person, date) ? person.override : null;
-
-    if (override?.location) {
-        return {
-            location: override.location,
-            source: 'override',
-            sinceMs: Number(override.sinceMs || 0) || null,
-        };
-    }
-
-    if (present && state?.scene?.location) {
-        return {
-            location: state.scene.location,
-            source: 'scene',
-            sinceMs: Number(state.scene.sinceMs || 0) || null,
-        };
-    }
-
-    if (person?.base?.location) {
-        return {
-            location: person.base.location,
-            source: 'base',
-            sinceMs: Number(person.base.sinceMs || 0) || null,
-        };
-    }
-
-    return { location: '', source: '', sinceMs: null };
+    return ghActualLocationEvidenceAt(person, date);
 }
 
 
@@ -946,10 +1343,16 @@ function ghBuildObligationCue(person, date = ghGetCurrentTime()) {
         const startMs = start.getTime();
         const endMs = end.getTime();
         const expectedLocation = entry.location || '';
+        const expectedArea = entry.area || '';
         const mismatch =
-            expectedLocation &&
-            actual.location &&
-            !ghLocationsMatch(actual.location, expectedLocation);
+            (expectedLocation || expectedArea) &&
+            (actual.location || actual.area) &&
+            ghStructuredLocationConflicts(
+                actual.location,
+                actual.area,
+                expectedLocation,
+                expectedArea,
+            );
 
         const base = {
             label: entry.label || 'Obligation',
@@ -958,7 +1361,9 @@ function ghBuildObligationCue(person, date = ghGetCurrentTime()) {
             entryStart: entry.start,
             entryEnd: entry.end,
             expectedLocation,
+            expectedArea,
             actualLocation: actual.location,
+            actualArea: actual.area,
         };
 
         if (now < startMs) {
@@ -1082,14 +1487,24 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
         hasActiveSuppressingException ||
         override?.excusesObligations
     );
+
+    const activeOccurrenceForSuppression = schedule
+        ? ghFindActiveScheduleOccurrence(person, date)
+        : null;
+    const occurrenceSuppression = activeOccurrenceForSuppression
+        ? ghScheduleIsSuppressedForOccurrence(person, activeOccurrenceForSuppression)
+        : { suppressed: false };
+
     const scheduleSuppressed =
-        schedule?.type === 'obligation' && obligationSuppressed;
+        (schedule?.type === 'obligation' && obligationSuppressed) ||
+        occurrenceSuppression.suppressed;
 
     const resolved = {
         id: person.id,
         name: person.name,
         avatar: person.avatar || '',
         location: person.base?.location || '',
+        area: person.base?.area || '',
         status: person.base?.status || '',
         availability: person.base?.availability || 'unknown',
         notes: person.base?.notes || '',
@@ -1110,13 +1525,24 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
         (present && state?.scene?.location) ||
         person.base?.location ||
         '';
+    const ordinaryActualArea =
+        (present && state?.scene?.area) ||
+        person.base?.area ||
+        '';
 
-    if (present && state?.scene?.location) {
+    if (present && (state?.scene?.location || state?.scene?.area)) {
         const baseLocation = person.base?.location || '';
+        const baseArea = person.base?.area || '';
         const baseConflictsWithScene =
-            baseLocation && !ghLocationsMatch(baseLocation, state.scene.location);
+            ghStructuredLocationConflicts(
+                baseLocation,
+                baseArea,
+                state.scene.location || '',
+                state.scene.area || '',
+            );
 
-        resolved.location = state.scene.location;
+        resolved.location = state.scene.location || resolved.location;
+        resolved.area = state.scene.area || resolved.area;
         resolved.source = 'scene';
         resolved.sourceLabel = state.scene.label || 'Current scene';
 
@@ -1134,13 +1560,22 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
     // no known location can still be inferred from their active schedule.
     if (schedule && !scheduleSuppressed) {
         const actualLocation = override?.location || ordinaryActualLocation;
+        const actualArea = override?.area || ordinaryActualArea;
+        const hasActual = !!(actualLocation || actualArea);
+        const hasExpected = !!(schedule.location || schedule.area);
         const scheduleMatchesActual =
-            !schedule.location ||
-            !actualLocation ||
-            ghLocationsMatch(actualLocation, schedule.location);
+            !hasExpected ||
+            !hasActual ||
+            !ghStructuredLocationConflicts(
+                actualLocation,
+                actualArea,
+                schedule.location || '',
+                schedule.area || '',
+            );
 
         if (scheduleMatchesActual) {
             resolved.location = schedule.location || resolved.location;
+            resolved.area = schedule.area || resolved.area;
             resolved.status = schedule.status || resolved.status;
             resolved.availability = schedule.availability || resolved.availability;
             resolved.source = 'schedule';
@@ -1153,6 +1588,7 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
     // conflict should produce a late cue.
     if (overrideActive) {
         resolved.location = override.location || resolved.location;
+        resolved.area = override.area || resolved.area;
         resolved.status = override.status || resolved.status;
         if (override.availability && override.availability !== 'inherit') {
             resolved.availability = override.availability;
@@ -1488,24 +1924,32 @@ function ghBuildPromptSummary() {
 
     const sceneParts = [];
     if (state.scene.label) sceneParts.push(state.scene.label);
-    if (state.scene.location) sceneParts.push(state.scene.location);
+    const formattedSceneLocation = ghFormatLocation(state.scene.location, state.scene.area);
+    if (formattedSceneLocation) sceneParts.push(formattedSceneLocation);
     if (sceneParts.length) lines.push(`Current scene: ${sceneParts.join(' — ')}.`);
     if (settings.injectSceneNotes && state.scene.notes) lines.push(`Scene note: ${state.scene.notes}`);
 
     const people = ghGetRelevantPeopleForPrompt();
+    const latestUserText = ghLatestUserMessageText();
+    const scheduleQuery = ghParseScheduleQuestion(latestUserText, date);
+
     for (const person of people) {
         const resolved = ghResolvePerson(person, date);
         const fields = [];
         const present = ghIsPersonPresent(person);
 
         fields.push(`presence: ${present ? 'present in the current scene' : 'off-screen'}`);
-        if (resolved.location) fields.push(`actual/likely location: ${resolved.location}`);
+        const formattedLocation = ghFormatLocation(resolved.location, resolved.area);
+        if (formattedLocation) fields.push(`actual/likely location: ${formattedLocation}`);
         if (resolved.status) fields.push(`status: ${resolved.status}`);
         if (resolved.availability && resolved.availability !== 'unknown') {
             fields.push(`availability: ${ghAvailabilityLabel(resolved.availability).toLowerCase()}`);
         }
         if (resolved.source === 'schedule' && resolved.sourceLabel) {
-            fields.push(`active schedule: ${resolved.sourceLabel}`);
+            const occurrence = ghFindActiveScheduleOccurrence(person, date);
+            fields.push(
+                `active schedule: ${resolved.sourceLabel}${occurrence ? ` (${occurrence.entry.start}–${occurrence.entry.end}; scheduled end ${occurrence.entry.end})` : ''}`
+            );
         }
         if (resolved.exception) {
             fields.push(`exception: ${ghExceptionLabel(resolved.exception)}${resolved.exception.suppressObligations ? ' (scheduled obligations excused)' : ''}`);
@@ -1514,17 +1958,44 @@ function ghBuildPromptSummary() {
 
         lines.push(`${person.name}: ${fields.join('; ')}.`);
 
+        const activeOccurrence = ghFindActiveScheduleOccurrence(person, date);
+        if (activeOccurrence) {
+            const suppression = ghScheduleIsSuppressedForOccurrence(person, activeOccurrence);
+            if (!suppression.suppressed) {
+                const where = ghFormatLocation(activeOccurrence.entry.location, activeOccurrence.entry.area);
+                const remaining = ghHumanDuration(ghMinutesUntil(activeOccurrence.end, date));
+                lines.push(
+                    `Schedule timing for ${person.name}: ${activeOccurrence.entry.label || 'current scheduled block'} is ${activeOccurrence.entry.start}–${activeOccurrence.entry.end}${where ? ` at ${where}` : ''}; it is scheduled to end exactly at ${activeOccurrence.entry.end} (${remaining} from now).`
+                );
+            }
+        }
+
+        const nextSchedules = ghUpcomingScheduleOccurrences(person, date, 18).slice(0, 2);
+        if (nextSchedules.length) {
+            const nextText = nextSchedules.map(item => {
+                const where = ghFormatLocation(item.entry.location, item.entry.area);
+                return `${item.entry.label || 'scheduled block'} ${item.entry.start}–${item.entry.end}${where ? ` at ${where}` : ''} (starts in ${ghHumanDuration(ghMinutesUntil(item.start, date))})`;
+            }).join('; ');
+            lines.push(
+                `Upcoming schedule for ${person.name}: ${nextText}. These are likely plans/routines, not guaranteed actions; explicit roleplay, travel, exceptions, or deliberate choices override them.`
+            );
+        }
+
+        for (const scheduleLine of ghScheduleQuestionContext(person, scheduleQuery, date)) {
+            lines.push(`Schedule memory for ${person.name}: ${scheduleLine}`);
+        }
+
         const cue = resolved.obligationCue;
         if (cue?.kind === 'upcoming') {
-            lines.push(`Obligation cue for ${person.name}: ${cue.label} starts at ${cue.entryStart || cue.start?.toLocaleTimeString?.([], { hour: '2-digit', minute: '2-digit' }) || ''} in about ${cue.minutes} minutes${cue.expectedLocation ? ` at ${cue.expectedLocation}` : ''}. This is an upcoming responsibility, not a forced action.`);
+            lines.push(`Obligation cue for ${person.name}: ${cue.label} starts at ${cue.entryStart || cue.start?.toLocaleTimeString?.([], { hour: '2-digit', minute: '2-digit' }) || ''} in about ${cue.minutes} minutes${(cue.expectedLocation || cue.expectedArea) ? ` at ${ghFormatLocation(cue.expectedLocation, cue.expectedArea)}` : ''}. This is an upcoming responsibility, not a forced action.`);
         } else if (cue?.kind === 'late') {
-            lines.push(`IMPORTANT realism cue for ${person.name}: ${cue.label} began at ${cue.entryStart || cue.start?.toLocaleTimeString?.([], { hour: '2-digit', minute: '2-digit' }) || ''}. ${person.name} appears to still be at ${cue.actualLocation || 'another location'} instead of ${cue.expectedLocation || 'the expected place'} and is about ${cue.minutes} minutes late. Unless the newest roleplay established an excuse, cancellation, leave, or deliberate choice to skip it, ${person.name} should realistically be aware of this obligation. Do NOT teleport them there.`);
+            lines.push(`IMPORTANT realism cue for ${person.name}: ${cue.label} began at ${cue.entryStart || cue.start?.toLocaleTimeString?.([], { hour: '2-digit', minute: '2-digit' }) || ''}. ${person.name} appears to still be at ${ghFormatLocation(cue.actualLocation, cue.actualArea) || 'another location'} instead of ${ghFormatLocation(cue.expectedLocation, cue.expectedArea) || 'the expected place'} and is about ${cue.minutes} minutes late. Unless the newest roleplay established an excuse, cancellation, leave, or deliberate choice to skip it, ${person.name} should realistically be aware of this obligation. Do NOT teleport them there.`);
         } else if (cue?.kind === 'missed') {
             lines.push(`Obligation cue for ${person.name}: ${cue.label} appears to have ended while ${person.name} was elsewhere. Treat this as a potentially missed obligation unless the roleplay established an excuse. Do not retroactively force attendance.`);
         }
     }
 
-    lines.push('Continuity rules: tracked does not mean physically present. Off-screen world-state facts are not automatic character knowledge. Schedules describe expectations or likely routines; they are cues, not commands. Characters may forget, skip, call sick, take leave, be on vacation, or otherwise deviate when the roleplay supports it. For a present person, explicit scene/override state is actual reality and must not be replaced by a conflicting schedule. The newest explicit roleplay events override stale Life state.');
+    lines.push('Continuity rules: tracked does not mean physically present. Off-screen world-state facts are not automatic character knowledge. Schedules describe expectations, normal habits, and likely plans; they are cues, not commands. When asked about a past scheduled time, use the routine/obligation as the default memory only if no explicit roleplay or stronger Life state establishes something different. If something different happened, state the real event and mention a skipped routine only when relevant. Location-free routines may happen while travelling; fixed-place/city routines must not be assumed during incompatible travel or vacation. Characters may forget, skip, call sick, take leave, be on vacation, or otherwise deviate when the roleplay supports it. For a present person, explicit scene/override state is actual reality and must not be replaced by a conflicting schedule. The newest explicit roleplay events override stale Life state.');
 
     return lines.join('\n');
 }
@@ -1578,6 +2049,7 @@ function ghApplySceneLocationToCurrentParticipants() {
 
             person.override.enabled = true;
             person.override.location = draft.scene.location;
+            person.override.area = draft.scene.area || '';
             person.override.untilMs = null;
             person.override.sinceMs = ghGetCurrentTime(draft).getTime();
         }
@@ -1637,6 +2109,7 @@ function ghAddCurrentPersona() {
             presenceMode: 'offscreen',
             base: {
                 location: '',
+                area: '',
                 status: '',
                 availability: 'available',
                 notes: '',
@@ -1897,6 +2370,7 @@ function ghOpenDefaultScheduleEditor(descriptor, scheduleId = null, onDone = nul
         start: '09:00',
         end: '17:00',
         location: '',
+        area: '',
         status: 'Working',
         availability: 'busy',
         priority: 0,
@@ -1966,8 +2440,13 @@ function ghOpenDefaultScheduleEditor(descriptor, scheduleId = null, onDone = nul
                         <input id="gh-default-schedule-end" type="time" value="${ghEscape(entry.end)}">
                     </label>
                     <label>
-                        <span>Location</span>
-                        <input id="gh-default-schedule-location" type="text" value="${ghEscape(entry.location)}" placeholder="Greyhaven City Hospital">
+                        <span>Place / venue</span>
+                        <input id="gh-default-schedule-location" type="text" value="${ghEscape(entry.location)}" placeholder="City Hospital, gym, park…">
+                    </label>
+                    <label>
+                        <span>City / area</span>
+                        <input id="gh-default-schedule-area" type="text" value="${ghEscape(entry.area || '')}" placeholder="Greyhaven, Vienna…">
+                        <small>Leave both blank for routines that can happen anywhere.</small>
                     </label>
                     <label>
                         <span>Availability</span>
@@ -2044,6 +2523,7 @@ function ghOpenDefaultScheduleEditor(descriptor, scheduleId = null, onDone = nul
             start: dialog.querySelector('#gh-default-schedule-start')?.value || '09:00',
             end: dialog.querySelector('#gh-default-schedule-end')?.value || '17:00',
             location: dialog.querySelector('#gh-default-schedule-location')?.value.trim() || '',
+            area: dialog.querySelector('#gh-default-schedule-area')?.value.trim() || '',
             availability: dialog.querySelector('#gh-default-schedule-availability')?.value || 'busy',
             status: dialog.querySelector('#gh-default-schedule-status')?.value.trim() || '',
             reminderMinutes: Number(dialog.querySelector('#gh-default-schedule-reminder')?.value || 60),
@@ -2090,7 +2570,7 @@ function ghOpenDefaultProfileDialog(descriptor) {
                     </div>
                     <div class="gh-life-schedule-time">${ghEscape(ghDaysSummary(entry.days))} · ${ghEscape(entry.start)}–${ghEscape(entry.end)}</div>
                     <div class="gh-life-schedule-meta">
-                        ${entry.location ? `<span><i class="fa-solid fa-location-dot"></i> ${ghEscape(entry.location)}</span>` : ''}
+                        ${ghFormatLocation(entry.location, entry.area) ? `<span><i class="fa-solid fa-location-dot"></i> ${ghEscape(ghFormatLocation(entry.location, entry.area))}</span>` : ''}
                         ${entry.status ? `<span>${ghEscape(entry.status)}</span>` : ''}
                         <span>${ghEscape(ghAvailabilityLabel(entry.availability))}</span>
                         ${entry.type === 'obligation' ? `<span>Reminder ${ghEscape(entry.reminderMinutes)}m · grace ${ghEscape(entry.graceMinutes)}m</span>` : ''}
@@ -2327,6 +2807,7 @@ function ghWorldStateForAnalysis() {
                 name: person.name,
                 presence: ghIsPersonPresent(person) ? 'present' : 'offscreen',
                 location: resolved.location || '',
+                area: resolved.area || '',
                 status: resolved.status || '',
                 availability: resolved.availability || 'unknown',
                 notes: person.base?.notes || '',
@@ -2350,6 +2831,7 @@ function ghNormalizeAnalysisResult(raw) {
         scene: {
             label: String(scene.label || '').trim(),
             location: String(scene.location || '').trim(),
+            area: String(scene.area || '').trim(),
             notes: String(scene.notes || '').trim(),
             confidence: confidence(scene.confidence),
             reason: String(scene.reason || '').trim(),
@@ -2361,6 +2843,7 @@ function ghNormalizeAnalysisResult(raw) {
                     name: String(item.name || '').trim(),
                     presence: presence(String(item.presence || '').toLowerCase()),
                     location: String(item.location || '').trim(),
+                    area: String(item.area || '').trim(),
                     status: String(item.status || '').trim(),
                     availability: availability(String(item.availability || '').toLowerCase()),
                     confidence: confidence(String(item.confidence || '').toLowerCase()),
@@ -2472,6 +2955,7 @@ function ghBuildCurrentWorldSnapshot({ summary = '', source = {} } = {}) {
                 name: person.name,
                 present: ghIsPersonPresent(person),
                 location: resolved.location || '',
+                area: resolved.area || '',
                 status: resolved.status || '',
                 availability: resolved.availability || 'unknown',
                 exception: resolved.exception ? ghExceptionLabel(resolved.exception) : '',
@@ -2526,6 +3010,7 @@ async function ghAnalyzeCurrentChat() {
     const systemPrompt = `You are Greyhaven Life's conservative world-state extractor for a realistic roleplay.
 Return ONLY one valid JSON object. Do not write markdown.
 You are not a storyteller. Never invent a location, action, availability, or presence just to fill a field.
+When location evidence is precise, separate the specific place/venue from the broader city/area instead of combining them into one string.
 Use strong recent evidence. The CHAT-SPECIFIC SCENARIO / SETUP is strong world-state evidence. Treat its stated location, participants, and current activity as true unless newer roleplay explicitly changes them.
 Newer roleplay overrides conflicting scenario details, but silence does NOT erase the scenario.
 If a field cannot be established from the scenario, newer roleplay, or existing state, return an empty string or "unchanged" so existing state can be preserved.
@@ -2552,7 +3037,8 @@ Required JSON shape:
   "summary": "one short factual snapshot summary",
   "scene": {
     "label": "",
-    "location": "",
+    "location": "specific place/venue/room, or empty",
+    "area": "city/region/country when known, or empty",
     "notes": "",
     "confidence": "high|medium|low",
     "reason": "short evidence"
@@ -2561,7 +3047,8 @@ Required JSON shape:
     {
       "name": "exact character/persona name",
       "presence": "present|offscreen|unchanged",
-      "location": "",
+      "location": "specific place/venue/room, or empty",
+      "area": "city/region/country when known, or empty",
       "status": "",
       "availability": "available|limited|busy|unavailable|sleeping|unknown|unchanged",
       "confidence": "high|medium|low",
@@ -2572,6 +3059,8 @@ Required JSON shape:
 
 Rules:
 - Treat explicit scenario statements as valid evidence even if the recent transcript does not repeat them.
+- Split location precision when possible: "Aurora's Apartment" belongs in location while "Greyhaven" belongs in area; "Hotel Room" in location and "Vienna" in area.
+- If only a city/region is known, leave location empty and put it in area. If only a venue is known, area may stay empty.
 - Example: if the scenario says "Aurora is at the cafe near the gym with Marcus" and no newer message moves either person, infer that cafe as the current scene/location and both as present.
 - Include tracked people when the scenario or recent evidence updates them.
 - You may include an untracked named SillyTavern character if the scenario OR recent roleplay clearly establishes their current state.
@@ -2633,6 +3122,7 @@ function ghOpenAnalysisPreview(result) {
     const sceneHasChange = !!(
         result.scene?.label ||
         result.scene?.location ||
+        result.scene?.area ||
         result.scene?.notes
     );
     const sceneChecked = sceneHasChange && result.scene.confidence !== 'low';
@@ -2640,7 +3130,8 @@ function ghOpenAnalysisPreview(result) {
     const rows = result.people.map((person, index) => {
         const details = [];
         if (person.presence !== 'unchanged') details.push(person.presence === 'present' ? 'Present' : 'Off-screen');
-        if (person.location) details.push(person.location);
+        const proposedLocation = ghFormatLocation(person.location, person.area);
+        if (proposedLocation) details.push(proposedLocation);
         if (person.status) details.push(person.status);
         if (person.availability !== 'unchanged') details.push(ghAvailabilityLabel(person.availability));
 
@@ -2676,7 +3167,7 @@ function ghOpenAnalysisPreview(result) {
                     <input type="checkbox" data-gh-analysis-scene ${sceneChecked ? 'checked' : ''} ${sceneHasChange ? '' : 'disabled'}>
                     <span class="gh-life-analysis-row-main">
                         <strong>${ghEscape(result.scene.label || 'Current scene')}</strong>
-                        <span>${ghEscape(result.scene.location || 'No location change')}</span>
+                        <span>${ghEscape(ghFormatLocation(result.scene.location, result.scene.area) || 'No location change')}</span>
                         ${result.scene.reason ? `<small>${ghEscape(result.scene.reason)}</small>` : ''}
                     </span>
                     <span class="gh-life-confidence is-${ghEscape(result.scene.confidence)}">${ghEscape(result.scene.confidence)}</span>
@@ -2723,6 +3214,7 @@ function ghOpenAnalysisPreview(result) {
             if (applyScene) {
                 if (result.scene.label) state.scene.label = result.scene.label;
                 if (result.scene.location) state.scene.location = result.scene.location;
+                if (result.scene.area) state.scene.area = result.scene.area;
                 if (result.scene.notes) state.scene.notes = result.scene.notes;
                 state.scene.sinceMs = ghGetCurrentTime(state).getTime();
             }
@@ -2748,6 +3240,7 @@ function ghOpenAnalysisPreview(result) {
                                 presenceMode: 'offscreen',
                                 base: {
                                     location: '',
+                                    area: '',
                                     status: '',
                                     availability: 'unknown',
                                     notes: '',
@@ -2765,8 +3258,9 @@ function ghOpenAnalysisPreview(result) {
 
                 if (proposed.presence === 'present') person.presenceMode = 'present';
                 if (proposed.presence === 'offscreen') person.presenceMode = 'offscreen';
-                if (proposed.location) {
-                    person.base.location = proposed.location;
+                if (proposed.location || proposed.area) {
+                    if (proposed.location) person.base.location = proposed.location;
+                    if (proposed.area) person.base.area = proposed.area;
                     person.base.sinceMs = ghGetCurrentTime(state).getTime();
                 }
                 if (proposed.status) person.base.status = proposed.status;
@@ -2823,7 +3317,7 @@ function ghRenderOverview() {
                 ${ghPersonAvatarHtml(person)}
                 <span class="gh-life-person-main">
                     <span class="gh-life-person-name">${ghEscape(person.name)}</span>
-                    <span class="gh-life-person-line">${ghEscape(resolved.location || 'Location not set')}</span>
+                    <span class="gh-life-person-line">${ghEscape(ghFormatLocation(resolved.location, resolved.area) || 'Location not set')}</span>
                     <span class="gh-life-person-meta">
                         ${ghEscape(resolved.status || ghAvailabilityLabel(resolved.availability))}
                         ${resolved.sourceLabel ? ` · ${ghEscape(resolved.sourceLabel)}` : ''}
@@ -2880,8 +3374,12 @@ function ghRenderOverview() {
                     <input id="gh-life-scene-label" type="text" value="${ghEscape(state.scene.label)}" placeholder="Dinner, hospital shift, beach day…">
                 </label>
                 <label>
-                    <span>Location</span>
-                    <input id="gh-life-scene-location" type="text" value="${ghEscape(state.scene.location)}" placeholder="Aurora's apartment, Greyhaven Hospital…">
+                    <span>Place / venue</span>
+                    <input id="gh-life-scene-location" type="text" value="${ghEscape(state.scene.location)}" placeholder="Aurora's apartment, cafe, hotel room…">
+                </label>
+                <label>
+                    <span>City / area</span>
+                    <input id="gh-life-scene-area" type="text" value="${ghEscape(state.scene.area || '')}" placeholder="Greyhaven, Vienna, Greece…">
                 </label>
                 <label class="gh-life-span-2">
                     <span>Scene note</span>
@@ -3049,7 +3547,7 @@ function ghRenderPeopleTab() {
                     ${ghPersonAvatarHtml(person)}
                     <div class="gh-life-person-main">
                         <div class="gh-life-person-name">${ghEscape(person.name)}</div>
-                        <div class="gh-life-person-line">${ghEscape(resolved.location || 'Location not set')}</div>
+                        <div class="gh-life-person-line">${ghEscape(ghFormatLocation(resolved.location, resolved.area) || 'Location not set')}</div>
                         <div class="gh-life-person-meta">
                             ${ghEscape(resolved.status || ghAvailabilityLabel(resolved.availability))}
                             ${resolved.sourceLabel ? ` · ${ghEscape(resolved.sourceLabel)}` : ''}
@@ -3182,7 +3680,7 @@ function ghRenderSchedulesTab() {
                     </div>
                     <div class="gh-life-schedule-time">${ghEscape(ghDaysSummary(entry.days))} · ${ghEscape(entry.start)}–${ghEscape(entry.end)}</div>
                     <div class="gh-life-schedule-meta">
-                        ${entry.location ? `<span><i class="fa-solid fa-location-dot"></i> ${ghEscape(entry.location)}</span>` : ''}
+                        ${ghFormatLocation(entry.location, entry.area) ? `<span><i class="fa-solid fa-location-dot"></i> ${ghEscape(ghFormatLocation(entry.location, entry.area))}</span>` : ''}
                         ${entry.status ? `<span>${ghEscape(entry.status)}</span>` : ''}
                         <span>${ghEscape(ghAvailabilityLabel(entry.availability))}</span>
                         ${entry.type === 'obligation' ? `<span><i class="fa-regular fa-bell"></i> ${ghEscape(entry.reminderMinutes)}m reminder · ${ghEscape(entry.graceMinutes)}m grace</span>` : ''}
@@ -3465,8 +3963,9 @@ function ghRenderMainDialog() {
     }[ghActiveTab]?.() || ghRenderOverview();
 
     dialog.querySelector('.gh-life-dialog-title').textContent = 'Greyhaven Life';
+    const subtitleLocation = ghFormatLocation(state.scene.location, state.scene.area);
     dialog.querySelector('.gh-life-dialog-subtitle').textContent =
-        `${ghFormatDate(date, { compact: true })}${state.scene.location ? ` · ${state.scene.location}` : ''}`;
+        `${ghFormatDate(date, { compact: true })}${subtitleLocation ? ` · ${subtitleLocation}` : ''}`;
 
     dialog.querySelector('.gh-life-tabs').innerHTML = [
         ghTabButton('overview', 'fa-solid fa-house', 'Overview'),
@@ -3593,7 +4092,7 @@ function ghOpenPersonEditor(personId) {
                     ${ghPersonAvatarHtml(person)}
                     <div>
                         <strong>${ghEscape(person.name)}</strong>
-                        <span>Actual: ${ghEscape(resolved.location || 'location not set')}</span>
+                        <span>Actual: ${ghEscape(ghFormatLocation(resolved.location, resolved.area) || 'location not set')}</span>
                     </div>
                 </div>
                 <button type="button" class="gh-life-dialog-close" data-gh-person-cancel>&times;</button>
@@ -3604,8 +4103,12 @@ function ghOpenPersonEditor(personId) {
                     <div class="gh-life-section-title">Default / last known state</div>
                     <div class="gh-life-form-grid">
                         <label>
-                            <span>Location</span>
-                            <input id="gh-person-base-location" type="text" value="${ghEscape(person.base.location)}" placeholder="Home, hospital, downtown…">
+                            <span>Place / venue</span>
+                            <input id="gh-person-base-location" type="text" value="${ghEscape(person.base.location)}" placeholder="Home, hospital, cafe…">
+                        </label>
+                        <label>
+                            <span>City / area</span>
+                            <input id="gh-person-base-area" type="text" value="${ghEscape(person.base.area || '')}" placeholder="Greyhaven, Vienna, Greece…">
                         </label>
                         <label>
                             <span>Availability</span>
@@ -3636,8 +4139,12 @@ function ghOpenPersonEditor(personId) {
 
                     <div class="gh-life-form-grid">
                         <label>
-                            <span>Location</span>
+                            <span>Place / venue</span>
                             <input id="gh-person-override-location" type="text" value="${ghEscape(person.override.location)}" placeholder="Leave blank to inherit">
+                        </label>
+                        <label>
+                            <span>City / area</span>
+                            <input id="gh-person-override-area" type="text" value="${ghEscape(person.override.area || '')}" placeholder="Leave blank to inherit">
                         </label>
                         <label>
                             <span>Availability</span>
@@ -3706,6 +4213,7 @@ function ghOpenPersonEditor(personId) {
             currentPerson.override = {
                 enabled: false,
                 location: '',
+                area: '',
                 status: '',
                 availability: 'inherit',
                 untilMs: null,
@@ -3725,6 +4233,7 @@ function ghOpenPersonEditor(personId) {
             if (!currentPerson) return;
 
             currentPerson.base.location = dialog.querySelector('#gh-person-base-location')?.value.trim() || '';
+            currentPerson.base.area = dialog.querySelector('#gh-person-base-area')?.value.trim() || '';
             currentPerson.base.availability = dialog.querySelector('#gh-person-base-availability')?.value || 'unknown';
             currentPerson.base.status = dialog.querySelector('#gh-person-base-status')?.value.trim() || '';
             currentPerson.base.notes = dialog.querySelector('#gh-person-base-notes')?.value.trim() || '';
@@ -3733,6 +4242,7 @@ function ghOpenPersonEditor(personId) {
             const wasOverrideActive = currentPerson.override.enabled;
             currentPerson.override.enabled = dialog.querySelector('#gh-person-override-enabled')?.checked ?? false;
             currentPerson.override.location = dialog.querySelector('#gh-person-override-location')?.value.trim() || '';
+            currentPerson.override.area = dialog.querySelector('#gh-person-override-area')?.value.trim() || '';
             currentPerson.override.availability = dialog.querySelector('#gh-person-override-availability')?.value || 'inherit';
             currentPerson.override.status = dialog.querySelector('#gh-person-override-status')?.value.trim() || '';
             currentPerson.override.untilMs =
@@ -3775,6 +4285,7 @@ function ghOpenScheduleEditor(personId, scheduleId = null) {
         start: '09:00',
         end: '17:00',
         location: '',
+        area: '',
         status: 'Working',
         availability: 'busy',
         priority: 0,
@@ -3848,8 +4359,13 @@ function ghOpenScheduleEditor(personId, scheduleId = null) {
                     </label>
 
                     <label>
-                        <span>Location</span>
-                        <input id="gh-schedule-location" type="text" value="${ghEscape(entry.location)}" placeholder="Greyhaven City Hospital">
+                        <span>Place / venue</span>
+                        <input id="gh-schedule-location" type="text" value="${ghEscape(entry.location)}" placeholder="City Hospital, gym, park…">
+                    </label>
+                    <label>
+                        <span>City / area</span>
+                        <input id="gh-schedule-area" type="text" value="${ghEscape(entry.area || '')}" placeholder="Greyhaven, Vienna…">
+                        <small>Leave both place and city blank for portable routines such as sleep or yoga.</small>
                     </label>
                     <label>
                         <span>Availability</span>
@@ -3938,6 +4454,7 @@ function ghOpenScheduleEditor(personId, scheduleId = null) {
             start: dialog.querySelector('#gh-schedule-start')?.value || '09:00',
             end: dialog.querySelector('#gh-schedule-end')?.value || '17:00',
             location: dialog.querySelector('#gh-schedule-location')?.value.trim() || '',
+            area: dialog.querySelector('#gh-schedule-area')?.value.trim() || '',
             availability: dialog.querySelector('#gh-schedule-availability')?.value || 'busy',
             status: dialog.querySelector('#gh-schedule-status')?.value.trim() || '',
             priority: Number(dialog.querySelector('#gh-schedule-priority')?.value || 0),
@@ -4054,6 +4571,7 @@ function ghHandleMainDialogClick(event) {
         ghSetScene({
             label: document.querySelector('#gh-life-scene-label')?.value.trim() || '',
             location: document.querySelector('#gh-life-scene-location')?.value.trim() || '',
+            area: document.querySelector('#gh-life-scene-area')?.value.trim() || '',
             notes: document.querySelector('#gh-life-scene-notes')?.value.trim() || '',
         });
         globalThis.toastr?.success?.('Scene updated.');
@@ -4358,7 +4876,8 @@ function ghUpdateHud() {
     hud.querySelector('.gh-life-hud-time').textContent = timeText;
 
     const sceneEl = hud.querySelector('.gh-life-hud-scene');
-    const scene = settings.hudShowScene ? (state.scene.location || state.scene.label || '') : '';
+    const sceneLocation = ghFormatLocation(state.scene.location, state.scene.area);
+    const scene = settings.hudShowScene ? (sceneLocation || state.scene.label || '') : '';
     sceneEl.textContent = scene;
     sceneEl.hidden = !scene;
 
@@ -4518,6 +5037,19 @@ function ghExposeApi() {
         getWorldSnapshot: () => ghClone(ghGetState({ create: false })?.worldSnapshot || null),
         getWorldSnapshotStatus: () => ghClone(ghGetWorldSnapshotStatus()),
         analyzeCurrentChat: ghAnalyzeCurrentChat,
+
+        getCurrentSchedule: nameOrId => {
+            const person = findPerson(nameOrId);
+            const occurrence = person ? ghFindActiveScheduleOccurrence(person, ghGetCurrentTime()) : null;
+            return occurrence ? ghClone(occurrence) : null;
+        },
+
+        getUpcomingSchedules: (nameOrId, horizonHours = 18) => {
+            const person = findPerson(nameOrId);
+            return person
+                ? ghClone(ghUpcomingScheduleOccurrences(person, ghGetCurrentTime(), horizonHours))
+                : [];
+        },
 
         getDefaultProfile: nameOrId => {
             const person = findPerson(nameOrId);
