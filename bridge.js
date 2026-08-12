@@ -1,7 +1,7 @@
 import './index.js';
 
 /*
- * Greyhaven Life v1.4.1 bridge layer
+ * Greyhaven Life v1.5.0 bridge layer
  * Builds on Greyhaven Life core v1.3.1 and adds:
  * - shared Greyhaven World/Event Ledger
  * - RP -> Phone hidden action bridge
@@ -9,7 +9,7 @@ import './index.js';
  * - compact bridge settings and public APIs
  */
 
-const GHW_VERSION = '1.4.1';
+const GHW_VERSION = '1.5.0';
 const CORE_VERSION = '1.3.1';
 const WORLD_META_KEY = 'greyhavenWorld';
 const LIFE_META_KEY = 'greyhavenLife';
@@ -22,6 +22,10 @@ const PROMPT_ROLE_SYSTEM = 0;
 const MARKER_RE = /<!--\s*GH_ACTION\s+([\s\S]*?)-->/gi;
 const MAX_WORLD_EVENTS = 400;
 const MAX_PROCESSED = 320;
+const SUPPORTED_ACTION_TYPES = new Set([
+    'message.send', 'media.send', 'call.place',
+    'contact.block', 'contact.unblock', 'contact.add', 'contact.exchange',
+]);
 
 let bridgeReady = false;
 let bridgeBound = false;
@@ -240,6 +244,85 @@ function markProcessed(key) {
     root.processed.push(key);
     persistWorld(root);
     return true;
+}
+
+function normalizeActionPayload(input={}, fallbackActor='') {
+    const type = norm(input.type);
+    if (!SUPPORTED_ACTION_TYPES.has(type)) return null;
+
+    const from = norm(input.from || input.actor || fallbackActor);
+    const to = norm(input.to || input.target);
+    if (!from || !to || lc(from) === lc(to)) return null;
+
+    const action = {
+        type,
+        from,
+        to,
+        text:type === 'message.send' ? norm(input.text) : '',
+        mediaType:type === 'media.send' && ['photo','video'].includes(lc(input.mediaType))
+            ? lc(input.mediaType) : '',
+        mediaDescription:type === 'media.send'
+            ? norm(input.description || input.mediaDescription) : '',
+        caption:type === 'media.send' ? norm(input.caption || input.text) : '',
+        expectsReply:input.expectsReply === true,
+        data:input.data && typeof input.data === 'object' ? clone(input.data) : {},
+    };
+    if (type === 'message.send' && !action.text) return null;
+    if (type === 'media.send' && (!action.mediaType || !action.mediaDescription)) return null;
+    return action;
+}
+
+function actionSummary(action) {
+    if (action.type === 'message.send') return `${action.from} sent ${action.to} a private message: ${action.text}`;
+    if (action.type === 'media.send') return `${action.from} sent ${action.to} a ${action.mediaType}: ${action.mediaDescription}${action.caption ? ` | caption: ${action.caption}` : ''}`;
+    if (action.type === 'call.place') return `${action.from} placed a phone call to ${action.to}.`;
+    if (action.type === 'contact.block') return `${action.from} blocked ${action.to}.`;
+    if (action.type === 'contact.unblock') return `${action.from} unblocked ${action.to}.`;
+    if (action.type === 'contact.add') return `${action.from} saved ${action.to}'s phone number.`;
+    if (action.type === 'contact.exchange') return `${action.from} and ${action.to} exchanged phone numbers.`;
+    return `${action.from} performed ${action.type} with ${action.to}.`;
+}
+
+/**
+ * One public, idempotent action entry point for RP, Guided Generations and Phone AI.
+ * Consumers materialize the resulting event through the same greyhaven-world-action bus.
+ */
+function dispatchWorldAction(input={}, options={}) {
+    const action = normalizeActionPayload(input, options.fallbackActor || '');
+    if (!action) return null;
+
+    const sourceKey = norm(options.sourceKey || input.sourceKey);
+    if (sourceKey && !markProcessed(sourceKey)) return null;
+    const persistent = ['contact.block','contact.unblock','contact.add','contact.exchange'].includes(action.type);
+    const event = recordWorldEvent({
+        type:action.type,
+        actor:action.from,
+        target:action.to,
+        participants:[action.from,action.to],
+        app:action.type.startsWith('call.') ? 'phone' : 'messages',
+        text:action.type === 'message.send' ? action.text : action.type === 'media.send' ? action.caption : '',
+        summary:actionSummary(action),
+        roleplayMs:Number.isFinite(Number(options.roleplayMs)) ? Number(options.roleplayMs) : roleplayNowMs(),
+        realMs:Number.isFinite(Number(options.realMs)) ? Number(options.realMs) : Date.now(),
+        source:norm(options.source || input.source || 'greyhaven-action-bus'),
+        sourceKey,
+        persistent,
+        data:{
+            ...action.data,
+            expectsReply:action.expectsReply,
+            rawType:action.type,
+            mediaType:action.mediaType,
+            mediaDescription:action.mediaDescription,
+            caption:action.caption,
+            inferred:options.inferred === true,
+            relayDepth:Math.max(0, Number(options.relayDepth || action.data?.relayDepth || 0)),
+        },
+    });
+    if (event) {
+        try { window.dispatchEvent(new CustomEvent('greyhaven-world-action', {detail:clone(event)})); }
+        catch {}
+    }
+    return event;
 }
 
 /* Import already-working manual Phone events into the shared ledger. */
@@ -503,10 +586,13 @@ Supported forms:
 <!--GH_ACTION {"type":"call.place","from":"Aurora","to":"Jack"}-->
 <!--GH_ACTION {"type":"contact.block","from":"Aurora","to":"Jack"}-->
 <!--GH_ACTION {"type":"contact.unblock","from":"Aurora","to":"Jack"}-->
+<!--GH_ACTION {"type":"contact.add","from":"Aurora","to":"Jack"}-->
+<!--GH_ACTION {"type":"contact.exchange","from":"Aurora","to":"Jack"}-->
 
 IMPORTANT:
 - The marker is hidden system data. Never explain it.
 - Use actual character names, never "I", "me", "you", or {{user}} in from/to.
+- Use names exactly as they already exist. Never invent, expand, or guess a surname.
 - Only emit a marker if the action is completed NOW. "I'll text Jack later", thinking about texting, preparing a photo, or promising to call is NOT an action.
 - For message.send, put the natural exact private message in "text".
 - For media.send, mediaType MUST be "photo" or "video". "description" is what the recipient can actually see in the fictional media. "caption" is optional text sent with the media.
@@ -516,6 +602,7 @@ IMPORTANT:
 - It is fine for the visible roleplay to describe what kind of photo/video was sent when that is naturally observable in the scene (for example, *I send Jack a selfie of Aurora and me*).
 - Only quote exact private text visibly when the scene itself explicitly requires the character to show, read aloud, or quote that message to someone present.
 - expectsReply should be true for a question/request or a send clearly intended to get a reaction; false for simple FYI/closure.
+- contact.add means only the actor saves the other person's real stored number. contact.exchange means both people explicitly exchange/save numbers. Merely meeting, learning a name, following on social media, or becoming friendly is never a number exchange.
 - Do not create incoming replies yourself. The bridge may generate at most one background reply separately.
 - Never invent a phone action merely because this instruction exists.`;
 }
@@ -769,6 +856,7 @@ function inferVisibleActions(message, index, raw) {
 async function handleMessageReceived(...args) {
     if (!bridgeSettings().worldBridgeEnabled) return;
     const c = ctx();
+    const lifecycle = args.find(arg => arg && typeof arg === 'object' && arg.__greyhavenLifecycle)?.__greyhavenLifecycle || 'message-received';
     const {message,index} = getReceivedMessageFromArgs(args);
     if (!message || message.is_user) return;
     const raw = String(message.mes ?? message.text ?? '');
@@ -783,9 +871,24 @@ async function handleMessageReceived(...args) {
     if (parsed.actions.length) {
         if ('mes' in message) message.mes = parsed.clean;
         if ('text' in message) message.text = parsed.clean;
+        if (Array.isArray(message.swipes) && Number.isInteger(Number(message.swipe_id))) {
+            const swipeIndex = Number(message.swipe_id);
+            if (swipeIndex >= 0 && swipeIndex < message.swipes.length) message.swipes[swipeIndex] = parsed.clean;
+        }
 
-        // MESSAGE_RECEIVED happens after the message is in chat but before render.
-        // Saving here makes hidden markers stay stripped when the chat is reopened.
+        // Guided Continue/Edit/Swipe can finish after the normal pre-render hook.
+        // Refresh the visible message when reconciliation happens later.
+        const messageElement = index >= 0 ? document.querySelector(`#chat .mes[mesid="${index}"] .mes_text`) : null;
+        if (messageElement && typeof c?.messageFormatting === 'function') {
+            try {
+                messageElement.innerHTML = c.messageFormatting(
+                    parsed.clean, message.name, message.is_system, message.is_user, index,
+                );
+            } catch {}
+        }
+
+        // Saving here keeps hidden markers stripped across reloads for normal and
+        // Guided Generations paths alike.
         try {
             if (typeof c?.saveChatConditional === 'function') await c.saveChatConditional();
             else if (typeof c?.saveChat === 'function') await c.saveChat();
@@ -794,79 +897,61 @@ async function handleMessageReceived(...args) {
         }
     }
 
-    const supported = new Set([
-        'message.send','media.send','call.place','contact.block','contact.unblock',
-    ]);
     const seen = new Set();
+    const slotCounts = new Map();
+    const explicitSlots = new Set(parsed.actions.map(item => {
+        const action = normalizeActionPayload(item.data || {}, message.name);
+        return action ? [action.type,lc(action.from),lc(action.to),action.mediaType].join('|') : '';
+    }).filter(Boolean));
 
     for (const item of allActions) {
         const data = item.data || {};
-        const type = norm(data.type);
-        if (!supported.has(type)) continue;
+        const action = normalizeActionPayload(data, message.name);
+        if (!action) continue;
 
-        const from = norm(data.from || data.actor || message.name);
-        const to = norm(data.to || data.target);
-        if (!from || !to || lc(from) === lc(to)) continue;
-
-        const text = type === 'message.send' ? norm(data.text) : '';
-        const mediaType = type === 'media.send'
-            ? (['photo','video'].includes(lc(data.mediaType)) ? lc(data.mediaType) : '')
-            : '';
-        const mediaDescription = type === 'media.send'
-            ? norm(data.description || data.mediaDescription)
-            : '';
-        const caption = type === 'media.send' ? norm(data.caption || data.text) : '';
-
-        if (type === 'message.send' && !text) continue;
-        if (type === 'media.send' && (!mediaType || !mediaDescription)) continue;
+        const slotBase = [action.type,lc(action.from),lc(action.to),action.mediaType].join('|');
+        // The explicit hidden marker has richer data and always wins over the
+        // conservative visible-prose fallback for the same completed action.
+        if (item.inferred && explicitSlots.has(slotBase)) continue;
 
         const signature = [
-            type,lc(from),lc(to),text,mediaType,mediaDescription,caption,
+            action.type,lc(action.from),lc(action.to),action.text,
+            action.mediaType,action.mediaDescription,action.caption,
         ].join('|');
         if (seen.has(signature)) continue;
         seen.add(signature);
 
-        const key = item.inferred
-            ? `rp-visible-action:${chatIdentity()}:${index}:${hashText(item.raw || signature)}`
-            : `rp-action:${chatIdentity()}:${index}:${hashText(item.raw || signature)}`;
-        if (!markProcessed(key)) continue;
+        // The slot intentionally ignores generated prose and exact message text.
+        // A swipe/regeneration at the same assistant-message index therefore cannot
+        // commit the same actor -> target action twice.
+        const ordinal = slotCounts.get(slotBase) || 0;
+        slotCounts.set(slotBase, ordinal + 1);
+        const key = `rp-action-slot:${chatIdentity()}:${index}:${hashText(slotBase)}:${ordinal}`;
 
-        let summary = '';
-        if (type === 'message.send') {
-            summary = `${from} sent ${to} a private message: ${text}`;
-        } else if (type === 'media.send') {
-            summary = `${from} sent ${to} a ${mediaType}: ${mediaDescription}${caption ? ` | caption: ${caption}` : ''}`;
-        } else if (type === 'call.place') {
-            summary = `${from} placed a phone call to ${to}.`;
-        } else if (type === 'contact.block') {
-            summary = `${from} blocked ${to}.`;
-        } else if (type === 'contact.unblock') {
-            summary = `${from} unblocked ${to}.`;
-        }
-
-        const event = recordWorldEvent({
-            type, actor:from, target:to, participants:[from,to],
-            app:type.startsWith('call.') ? 'phone' : 'messages',
-            text:type === 'message.send' ? text : type === 'media.send' ? caption : '',
-            summary,
-            roleplayMs:roleplayNowMs(), realMs:Date.now(),
-            source:item.inferred ? 'roleplay-visible-fallback' : 'roleplay',
+        dispatchWorldAction(data, {
+            fallbackActor:message.name,
+            source:item.inferred ? 'roleplay-visible-fallback' : (lifecycle.startsWith('guided') ? 'guided-generation' : 'roleplay'),
             sourceKey:key,
-            persistent:['contact.block','contact.unblock'].includes(type),
-            data:{
-                expectsReply:data.expectsReply === true,
-                rawType:type,
-                mediaType,
-                mediaDescription,
-                caption,
-                inferred:item.inferred === true,
-            },
+            inferred:item.inferred === true,
+            roleplayMs:roleplayNowMs(),
+            realMs:Date.now(),
         });
-        if (event) {
-            try { window.dispatchEvent(new CustomEvent('greyhaven-world-action', {detail: clone(event)})); }
-            catch {}
-        }
     }
+}
+
+function reconcileAssistantMessage(source, ...args) {
+    const marker = {__greyhavenLifecycle:norm(source || 'guided-reconcile')};
+    Promise.resolve(handleMessageReceived(marker, ...args))
+        .catch(error => console.error('[greyhaven-world] action reconciliation', source, error));
+}
+
+function reconcileRecentAssistantMessages(source='guided-generation') {
+    const chat = Array.isArray(ctx()?.chat) ? ctx().chat : [];
+    const indexes = [];
+    for (let i=chat.length-1; i>=0 && indexes.length<3; i--) {
+        if (!chat[i]?.is_user) indexes.push(i);
+    }
+    for (const index of indexes.reverse()) reconcileAssistantMessage(source, index);
 }
 
 /* ---------------- UI: one-time plans ---------------- */
@@ -1115,6 +1200,7 @@ function exposeBridgeApi() {
         coreVersion: CORE_VERSION,
         worldBridgeVersion: 1,
         recordWorldEvent,
+        dispatchWorldAction,
         getWorldEvents,
         getWorldState: () => clone(worldRoot({create:false})),
         getContextBundle,
@@ -1140,7 +1226,16 @@ function bindEvents() {
     if (!c?.eventSource || !c?.eventTypes) return;
     const bind=(key,fn)=>{const name=c.eventTypes[key];if(name)c.eventSource.on(name,fn);};
     bind('GENERATION_STARTED', updateBridgePrompts);
-    bind('MESSAGE_RECEIVED', (...args)=>{ Promise.resolve(handleMessageReceived(...args)).catch(e=>console.error('[greyhaven-world] MESSAGE_RECEIVED',e)); });
+    bind('MESSAGE_RECEIVED', (...args)=>reconcileAssistantMessage('message-received', ...args));
+    // Guided Generations can create a normal trigger, append with Continue, edit
+    // the current message, or navigate/generate a swipe. Reconcile every relevant
+    // lifecycle path through the same idempotent extractor/action bus.
+    for (const key of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_SWIPED','MESSAGE_EDITED','MESSAGE_UPDATED']) {
+        bind(key, (...args)=>setTimeout(()=>reconcileAssistantMessage(`guided-${key.toLowerCase()}`, ...args), 20));
+    }
+    for (const key of ['GENERATION_ENDED','GENERATION_STOPPED']) {
+        bind(key, ()=>setTimeout(()=>reconcileRecentAssistantMessages(`guided-${key.toLowerCase()}`), 80));
+    }
     bind('CHAT_CHANGED', ()=>setTimeout(()=>{ lastActionPrompt='';lastPlanPrompt='';lastWorldPrompt='';updateBridgePrompts();injectLifeUiSoon(); },40));
     bind('CHAT_CREATED', ()=>setTimeout(()=>{ lastActionPrompt='';lastPlanPrompt='';lastWorldPrompt='';updateBridgePrompts();injectLifeUiSoon(); },40));
     bind('PERSONA_CHANGED', ()=>setTimeout(updateBridgePrompts,40));

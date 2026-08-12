@@ -1,4 +1,13 @@
-# Greyhaven Life v1.2.0
+# Greyhaven Life v1.5.0
+
+Version 1.5 unifies normal assistant messages and Guided Generations on the same
+idempotent `GH_ACTION` extractor/action bus. It adds contact-number add/exchange
+actions for Greyhaven Phone and reconciles trigger, swipe, edit, continue, and
+generation-completion lifecycle paths without duplicating already-committed
+actions. The existing one-time event resolver and Calendar integration remain
+intact.
+
+## Previous v1.2 overview
 
 A mobile-first SillyTavern extension for persistent, chat-scoped life simulation:
 authoritative roleplay time, scene presence, locations, availability, reusable
