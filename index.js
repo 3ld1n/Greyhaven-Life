@@ -1,5 +1,5 @@
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.3.0';
+const GH_VERSION = '1.3.1';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -166,6 +166,7 @@ function ghDefaultState() {
         people: {},
         peopleOrder: [],
         ignoredPeople: [],
+        oneTimePlans: [],
         worldSnapshot: null,
     };
 }
@@ -275,6 +276,7 @@ function ghNormalizeState(raw) {
     if (!Array.isArray(state.peopleOrder)) state.peopleOrder = [];
     if (!Array.isArray(state.ignoredPeople)) state.ignoredPeople = [];
     state.ignoredPeople = [...new Set(state.ignoredPeople.map(String))];
+    if (!Array.isArray(state.oneTimePlans)) state.oneTimePlans = [];
 
     for (const [id, person] of Object.entries(state.people)) {
         state.people[id] = ghNormalizePerson({ ...person, id });
@@ -1468,10 +1470,38 @@ function ghOverrideIsActive(person, date) {
 
 
 
+
+function ghFindActiveOneTimePlanForPerson(person, date = ghGetCurrentTime()) {
+    if (!person?.name) return null;
+    const state = ghGetState({ create: false });
+    const plans = Array.isArray(state?.oneTimePlans) ? state.oneTimePlans : [];
+    const nowMs = date.getTime();
+    const personName = String(person.name || '').trim().toLowerCase();
+
+    const active = plans
+        .filter(plan => {
+            if (!plan || plan.state && plan.state !== 'planned') return false;
+            const participants = Array.isArray(plan.participants) ? plan.participants : [];
+            if (!participants.some(name => String(name || '').trim().toLowerCase() === personName)) return false;
+            const startMs = Number(plan.startMs || 0);
+            const endMs = Number(plan.endMs || 0);
+            return Number.isFinite(startMs) && Number.isFinite(endMs) &&
+                nowMs >= startMs && nowMs < endMs;
+        })
+        .sort((a, b) =>
+            Number(b.startMs || 0) - Number(a.startMs || 0) ||
+            Number(b.updatedAt || 0) - Number(a.updatedAt || 0)
+        );
+
+    return active[0] || null;
+}
+
+
 function ghResolvePerson(person, date = ghGetCurrentTime()) {
     const state = ghGetState({ create: false });
     const present = ghIsPersonPresent(person);
     const schedule = ghFindActiveSchedule(person, date);
+    const oneTimePlan = ghFindActiveOneTimePlanForPerson(person, date);
     const exception = ghGetActiveException(person, date);
     const overrideActive = ghOverrideIsActive(person, date);
     const override = overrideActive ? person.override : null;
@@ -1512,6 +1542,7 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
         sourceLabel: '',
         schedule: schedule || null,
         expectedSchedule: schedule || null,
+        oneTimePlan: oneTimePlan || null,
         exception: exception || null,
         override: override || null,
         present,
@@ -1580,6 +1611,59 @@ function ghResolvePerson(person, date = ghGetCurrentTime()) {
             resolved.availability = schedule.availability || resolved.availability;
             resolved.source = 'schedule';
             resolved.sourceLabel = schedule.label || 'Schedule';
+        }
+    }
+
+    // One-time plans are more specific than recurring schedules. They can become
+    // the likely current state during their exact time window, but they still do
+    // not override newer explicit roleplay reality. A base/scene update made
+    // after the plan started is treated as stronger evidence that the plan was
+    // changed, skipped, delayed or replaced.
+    if (oneTimePlan) {
+        const planStartMs = Number(oneTimePlan.startMs || 0);
+        const sceneSinceMs = Number(state?.scene?.sinceMs || 0);
+        const baseSinceMs = Number(person.base?.sinceMs || 0);
+
+        const sceneIsNewerEvidence = !!(
+            present &&
+            (state?.scene?.location || state?.scene?.area) &&
+            sceneSinceMs >= planStartMs
+        );
+        const baseIsNewerEvidence = !!(
+            (person.base?.location || person.base?.area) &&
+            baseSinceMs >= planStartMs
+        );
+
+        const actualLocation =
+            override?.location ||
+            (sceneIsNewerEvidence ? state?.scene?.location : '') ||
+            (baseIsNewerEvidence ? person.base?.location : '');
+        const actualArea =
+            override?.area ||
+            (sceneIsNewerEvidence ? state?.scene?.area : '') ||
+            (baseIsNewerEvidence ? person.base?.area : '');
+
+        const hasActual = !!(actualLocation || actualArea);
+        const hasExpected = !!(oneTimePlan.location || oneTimePlan.area);
+        const planMatchesActual =
+            !hasExpected ||
+            !hasActual ||
+            !ghStructuredLocationConflicts(
+                actualLocation,
+                actualArea,
+                oneTimePlan.location || '',
+                oneTimePlan.area || '',
+            );
+
+        if (planMatchesActual) {
+            resolved.location = oneTimePlan.location || resolved.location;
+            resolved.area = oneTimePlan.area || resolved.area;
+            resolved.status = oneTimePlan.status || oneTimePlan.title || resolved.status;
+            resolved.availability = oneTimePlan.availability || resolved.availability;
+            resolved.source = 'one-time-plan';
+            resolved.sourceLabel = oneTimePlan.title
+                ? `One-time · ${oneTimePlan.title}`
+                : 'One-time plan';
         }
     }
 
@@ -5184,7 +5268,7 @@ function ghStartClock() {
             ghUpdatePrompt();
 
             const dialog = document.querySelector('#gh-life-dialog');
-            if (dialog?.open && ['overview', 'time'].includes(ghActiveTab)) {
+            if (dialog?.open && ['overview', 'time', 'people'].includes(ghActiveTab)) {
                 ghScheduleRender();
             }
 

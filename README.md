@@ -347,3 +347,12 @@ Analyze Current Chat now asks the model to separate specific venue from city/are
 
 ### Future Phone support
 The public Greyhaven Life API now exposes current and upcoming schedule occurrences for future Phone/Snap Map integration.
+
+
+## v1.4.1 — World/media bridge + active one-time plans
+
+- Guided/visible RP actions such as `I press unblock` can reconcile block/unblock state even if the model omits the hidden action marker.
+- Completed RP photo/video sends can materialize in Greyhaven Phone with a fictional media description and optional caption.
+- Active One-Time Plans now resolve into each participant's current location, area, activity/status and availability.
+- Newer explicit roleplay state still wins over a plan, so plans remain expectations rather than teleportation rules.
+- One-Time Plan cards were restyled to match the compact Greyhaven Life UI.
