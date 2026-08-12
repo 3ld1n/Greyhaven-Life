@@ -1,7 +1,7 @@
 import './index.js';
 
 /*
- * Greyhaven Life v1.5.0 bridge layer
+ * Greyhaven Life v1.6.0 bridge layer
  * Builds on Greyhaven Life core v1.3.1 and adds:
  * - shared Greyhaven World/Event Ledger
  * - RP -> Phone hidden action bridge
@@ -9,7 +9,7 @@ import './index.js';
  * - compact bridge settings and public APIs
  */
 
-const GHW_VERSION = '1.5.0';
+const GHW_VERSION = '1.6.0';
 const CORE_VERSION = '1.3.1';
 const WORLD_META_KEY = 'greyhavenWorld';
 const LIFE_META_KEY = 'greyhavenLife';
@@ -25,6 +25,9 @@ const MAX_PROCESSED = 320;
 const SUPPORTED_ACTION_TYPES = new Set([
     'message.send', 'media.send', 'call.place',
     'contact.block', 'contact.unblock', 'contact.add', 'contact.exchange',
+    'instagram.follow', 'instagram.unfollow',
+    'snapchat.add', 'snapchat.accept', 'snapchat.decline',
+    'facebook.friend.request', 'facebook.friend.accept', 'facebook.friend.decline',
 ]);
 
 let bridgeReady = false;
@@ -280,7 +283,23 @@ function actionSummary(action) {
     if (action.type === 'contact.unblock') return `${action.from} unblocked ${action.to}.`;
     if (action.type === 'contact.add') return `${action.from} saved ${action.to}'s phone number.`;
     if (action.type === 'contact.exchange') return `${action.from} and ${action.to} exchanged phone numbers.`;
+    if (action.type === 'instagram.follow') return `${action.from} followed ${action.to} on Instagram.`;
+    if (action.type === 'instagram.unfollow') return `${action.from} unfollowed ${action.to} on Instagram.`;
+    if (action.type === 'snapchat.add') return `${action.from} sent ${action.to} a Snapchat friend request.`;
+    if (action.type === 'snapchat.accept') return `${action.from} accepted ${action.to}'s Snapchat friend request.`;
+    if (action.type === 'snapchat.decline') return `${action.from} declined ${action.to}'s Snapchat friend request.`;
+    if (action.type === 'facebook.friend.request') return `${action.from} sent ${action.to} a Facebook friend request.`;
+    if (action.type === 'facebook.friend.accept') return `${action.from} accepted ${action.to}'s Facebook friend request.`;
+    if (action.type === 'facebook.friend.decline') return `${action.from} declined ${action.to}'s Facebook friend request.`;
     return `${action.from} performed ${action.type} with ${action.to}.`;
+}
+
+function actionApp(type='') {
+    if (String(type).startsWith('instagram.')) return 'instagram';
+    if (String(type).startsWith('snapchat.')) return 'snapchat';
+    if (String(type).startsWith('facebook.')) return 'facebook';
+    if (String(type).startsWith('call.')) return 'phone';
+    return 'messages';
 }
 
 /**
@@ -293,13 +312,13 @@ function dispatchWorldAction(input={}, options={}) {
 
     const sourceKey = norm(options.sourceKey || input.sourceKey);
     if (sourceKey && !markProcessed(sourceKey)) return null;
-    const persistent = ['contact.block','contact.unblock','contact.add','contact.exchange'].includes(action.type);
+    const persistent = ['contact.block','contact.unblock','contact.add','contact.exchange','instagram.follow','instagram.unfollow','snapchat.add','snapchat.accept','snapchat.decline','facebook.friend.request','facebook.friend.accept','facebook.friend.decline'].includes(action.type);
     const event = recordWorldEvent({
         type:action.type,
         actor:action.from,
         target:action.to,
         participants:[action.from,action.to],
-        app:action.type.startsWith('call.') ? 'phone' : 'messages',
+        app:actionApp(action.type),
         text:action.type === 'message.send' ? action.text : action.type === 'media.send' ? action.caption : '',
         summary:actionSummary(action),
         roleplayMs:Number.isFinite(Number(options.roleplayMs)) ? Number(options.roleplayMs) : roleplayNowMs(),
@@ -588,6 +607,12 @@ Supported forms:
 <!--GH_ACTION {"type":"contact.unblock","from":"Aurora","to":"Jack"}-->
 <!--GH_ACTION {"type":"contact.add","from":"Aurora","to":"Jack"}-->
 <!--GH_ACTION {"type":"contact.exchange","from":"Aurora","to":"Jack"}-->
+<!--GH_ACTION {"type":"instagram.follow","from":"Aurora","to":"Eldin"}-->
+<!--GH_ACTION {"type":"instagram.unfollow","from":"Aurora","to":"Marcus"}-->
+<!--GH_ACTION {"type":"snapchat.add","from":"Aurora","to":"Eldin"}-->
+<!--GH_ACTION {"type":"snapchat.accept","from":"Aurora","to":"Eldin"}-->
+<!--GH_ACTION {"type":"facebook.friend.request","from":"Aurora","to":"Eldin"}-->
+<!--GH_ACTION {"type":"facebook.friend.accept","from":"Aurora","to":"Eldin"}-->
 
 IMPORTANT:
 - The marker is hidden system data. Never explain it.
@@ -603,6 +628,8 @@ IMPORTANT:
 - Only quote exact private text visibly when the scene itself explicitly requires the character to show, read aloud, or quote that message to someone present.
 - expectsReply should be true for a question/request or a send clearly intended to get a reaction; false for simple FYI/closure.
 - contact.add means only the actor saves the other person's real stored number. contact.exchange means both people explicitly exchange/save numbers. Merely meeting, learning a name, following on social media, or becoming friendly is never a number exchange.
+- instagram.follow/unfollow, snapchat.add/accept/decline and facebook.friend.request/accept/decline record completed social actions. A visible "I follow you back" or "I sent the request" requires the matching marker when it really happened now.
+- Social relationships are app-specific. Following on Instagram does not save a number, accept Snapchat, or create a Facebook friendship.
 - Do not create incoming replies yourself. The bridge may generate at most one background reply separately.
 - Never invent a phone action merely because this instruction exists.`;
 }
@@ -767,6 +794,30 @@ function findClosestActionTarget(text, actor, position=0) {
     }
     return best && best.score <= 520 ? best.name : '';
 }
+function visibleActionTarget(text, actor, position=0) {
+    const source=String(text||''),local=source.slice(Math.max(0,position-16),Math.min(source.length,position+220)),persona=norm(ctx()?.name1);
+    if (persona && lc(persona)!==lc(actor) && /\b(?:you|your|yours)\b/iu.test(local)) return persona;
+    return findClosestActionTarget(source,actor,position);
+}
+function visiblePrivateMessageBody(source, matchEnd=0) {
+    const tail=String(source||'').slice(matchEnd,matchEnd+950);
+    let m=tail.match(/^\s*(?:a\s+(?:private\s+)?(?:text|message))?\s*(?:saying|that\s+says|which\s+says|with)?\s*[:\-–,]?\s*["“]([^"”]{1,700})["”]/iu);
+    if (m?.[1]) return norm(m[1]);
+    // Common RP form: *I send Jack a message.* Hey Jack, ... *I put my phone down.*
+    m=tail.match(/^[^*]{0,120}\*\s*([^*]{1,700}?)(?=\s*\*|$)/u);
+    if (m?.[1] && !/^I\s+(?:put|set|show|look|glance|turn|wait)\b/iu.test(norm(m[1]))) return norm(m[1]);
+    m=tail.match(/^\s*(?:a\s+(?:private\s+)?(?:text|message))?\s*(?:saying|that\s+says|which\s+says|with)?\s*[:\-–]\s*([^*]{1,700}?)(?=\s*\*|$)/u);
+    if (m?.[1]) return norm(m[1]).replace(/^["“]|["”]$/g,'');
+    const intent=tail.match(/^[^.!?*]{0,100}\b(?:ask(?:ing)?|tell(?:ing)?|say(?:ing)?)\s+(?:him|her|them)\s+(to\s+|whether\s+|if\s+)?([^.!?*]{1,280})/iu);
+    if (intent?.[2]) {
+        let body=norm(intent[2]).replace(/\b(?:him|her|them)\b/giu,'you').replace(/\b(?:his|her|their)\b/giu,'your');
+        if (/^where\s+(?:he|she|they)\s+(?:is|are)\b/iu.test(body)) body=body.replace(/^where\s+(?:he|she|they)\s+(?:is|are)\b/iu,'where are you');
+        if (/^to\s+/iu.test(intent[1]||'')) return `hey, can you ${body.replace(/^to\s+/iu,'')}?`;
+        return `hey, ${body}${/[?!]$/.test(body)?'':'?'}`;
+    }
+    const about=tail.match(/^[^.!?*]{0,90}\babout\s+([^.!?*]{1,260})/iu);
+    return about?.[1]?`hey, ${norm(about[1])}`:'hey';
+}
 function visibleMediaCaption(text='') {
     const source = String(text || '');
     const m = source.match(/\b(?:with\s+(?:the\s+)?caption|caption(?:ed)?(?:\s+it)?(?:\s+with)?)\s*[:\-–]?\s*["“]([^"”]{1,500})["”]/iu);
@@ -800,13 +851,53 @@ function inferVisibleActions(message, index, raw) {
     ];
     for (const re of contactPatterns) {
         for (const match of source.matchAll(re)) {
-            const target = findClosestActionTarget(source, actor, Number(match.index || 0));
+            const target = visibleActionTarget(source, actor, Number(match.index || 0));
             if (!target) continue;
             inferred.push({
                 data:{type:`contact.${lc(match[1])}`,from:actor,to:target},
                 raw:`visible:${index}:${match[0]}:${target}`,
                 inferred:true,
             });
+        }
+    }
+
+    // Explicitly completed Instagram/Snapchat/Facebook actions. This is the
+    // conservative safety net for Guided Generations or models that omit the
+    // hidden marker; the marker still wins when both are present.
+    const subject=`(?:I|${escapeRegExp(actor)})`,lead=`\\b${subject}\\b[^.!?*]{0,100}?`,socialPatterns=[
+        {type:'instagram.unfollow',re:new RegExp(`${lead}\\bunfollow(?:ed|s)?\\b[^.!?*]{0,150}\\bInstagram\\b`,'giu')},
+        {type:'instagram.follow',re:new RegExp(`${lead}\\bfollow(?:ed|s)?\\b[^.!?*]{0,150}\\bInstagram\\b`,'giu')},
+        {type:'snapchat.accept',re:new RegExp(`${lead}\\baccept(?:ed|s)?\\b[^.!?*]{0,150}\\b(?:Snapchat|Snap)\\b`,'giu')},
+        {type:'snapchat.decline',re:new RegExp(`${lead}\\b(?:decline(?:d|s)?|ignore(?:d|s)?)\\b[^.!?*]{0,150}\\b(?:Snapchat|Snap)\\b`,'giu')},
+        {type:'snapchat.add',re:new RegExp(`${lead}(?:(?:\\badd(?:ed|s)?\\b[^.!?*]{0,160}\\b(?:Snapchat|Snap))|(?:\\b(?:send(?:ing|s)?|sent)\\b[^.!?*]{0,100}\\b(?:friend\\s+)?request\\b[^.!?*]{0,80}\\b(?:Snapchat|Snap)))`,'giu')},
+        {type:'facebook.friend.accept',re:new RegExp(`${lead}\\baccept(?:ed|s)?\\b[^.!?*]{0,150}\\bFacebook\\b`,'giu')},
+        {type:'facebook.friend.decline',re:new RegExp(`${lead}\\b(?:decline(?:d|s)?|ignore(?:d|s)?)\\b[^.!?*]{0,150}\\bFacebook\\b`,'giu')},
+        {type:'facebook.friend.request',re:new RegExp(`${lead}(?:(?:\\badd(?:ed|s)?\\b[^.!?*]{0,160}\\bFacebook)|(?:\\b(?:send(?:ing|s)?|sent)\\b[^.!?*]{0,100}\\b(?:friend\\s+)?request\\b[^.!?*]{0,80}\\bFacebook))`,'giu')},
+    ];
+    for (const {type,re} of socialPatterns) {
+        for (const match of source.matchAll(re)) {
+            if (/\b(?:ask|tell|want|need|try|plan|promise|consider)\b[^.!?*]{0,90}\bto\s+(?:unfollow|follow|accept|decline|ignore|add|send)\b/iu.test(match[0])) continue;
+            if ((type==='snapchat.add'||type==='facebook.friend.request') && /\b(?:accept(?:ed|s)?|add(?:ed|s)?\s+(?:you\s+|[\p{L}\p{M}'’-]+\s+)?back)\b/iu.test(match[0])) continue;
+            const target=visibleActionTarget(source,actor,Number(match.index||0));if(!target)continue;
+            inferred.push({data:{type,from:actor,to:target},raw:`visible-social:${index}:${type}:${actor}:${target}`,inferred:true});
+        }
+    }
+
+    // Completed visible texts, including the common Guided/RP form:
+    // *I send Jack a message.* Hey Jack, ... *I put my phone away.*
+    // Requests such as "I ask Zara to text Jack" are deliberately rejected.
+    const messageVerb='(?:text(?:ed|ing|s)?|messag(?:e|ed|ing|es)|send(?:ing|s)?|sent)',knownTargets=actionKnownNames();
+    for (const targetName of knownTargets) {
+        if (!targetName || lc(targetName)===lc(actor)) continue;
+        const targetToken=lc(targetName)===lc(ctx()?.name1)?`(?:you|${escapeRegExp(targetName)})`:escapeRegExp(targetName),re=new RegExp(`\\b${subject}\\b([^.!?*]{0,130}?)\\b${messageVerb}\\s+(?:a\\s+(?:private\\s+)?(?:text|message)\\s+to\\s+)?${targetToken}\\b`,'giu');
+        for (const match of source.matchAll(re)) {
+            if (/\b(?:ask|tell|want|need)\s+[\p{L}\p{M}'’-]+\s+to\s*$/iu.test(norm(match[1]||''))) continue;
+            const immediate=source.slice(Number(match.index||0)+match[0].length,Number(match.index||0)+match[0].length+90);
+            if (/^\s+(?:(?:a|an|the|another|this)\s+)?(?:selfie|photo|picture|pic|video|clip)\b/iu.test(immediate)) continue;
+            if (/^\s+(?:(?:a|the)\s+)?(?:friend\s+)?request\b[^.!?*]{0,70}\b(?:Instagram|Snapchat|Snap|Facebook)\b/iu.test(immediate)) continue;
+            const text=visiblePrivateMessageBody(source,Number(match.index||0)+match[0].length);if(!text)continue;
+            inferred.push({data:{type:'message.send',from:actor,to:targetName,text,expectsReply:/[?]\s*$/.test(text)||/\b(?:can you|could you|would you|will you|please|let me know|reply|answer)\b/iu.test(text)},raw:`visible-message:${index}:${actor}:${targetName}:${text}`,inferred:true});
+            break;
         }
     }
 

@@ -1,4 +1,13 @@
-# Greyhaven Life v1.5.0
+# Greyhaven Life v1.6.0
+
+Version 1.6 extends the same idempotent `GH_ACTION` bus to Instagram follows,
+Snapchat add/accept/decline actions, and Facebook friend requests. Its visible
+completed-action fallback now recognizes Guided Generation follow-backs,
+friend requests, acceptances, and cross-character texts when a model omits the
+hidden marker. Requests, promises, media sends, and social actions are kept
+separate so the fallback does not create duplicate or false iMessages.
+
+## Previous v1.5.0 action-bridge update
 
 Version 1.5 unifies normal assistant messages and Guided Generations on the same
 idempotent `GH_ACTION` extractor/action bus. It adds contact-number add/exchange
