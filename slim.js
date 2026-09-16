@@ -6,7 +6,7 @@ import './bridge.js';
  * replacing the location/presence/world-snapshot prompt with a compact schedule-first prompt.
  */
 
-const GH_SLIM_VERSION = '1.7.0';
+const GH_SLIM_VERSION = '1.7.1';
 const SETTINGS_KEY = 'greyhavenLife';
 const META_KEY = 'greyhavenLifeSlim';
 const OLD_META_KEY = 'greyhavenLife';
@@ -397,12 +397,56 @@ function deleteException(name, id) {
   return s.exceptions[key].length < before;
 }
 
+let clockOpenAttempt = 0;
+
+function phoneOverlayVisible() {
+  const overlay = document.querySelector('#ghp-overlay');
+  return !!(overlay && !overlay.hidden);
+}
+
 function openClock() {
-  const phoneLife = globalThis.GreyhavenPhoneLifeAssets;
-  if (typeof phoneLife?.openLife === 'function') {
-    try { return phoneLife.openLife('clock'); } catch {}
-  }
-  openFallback();
+  clockOpenAttempt += 1;
+  const requestId = clockOpenAttempt;
+
+  const tryOpen = (attempt = 0) => {
+    if (requestId !== clockOpenAttempt) return;
+
+    const phone = globalThis.GreyhavenPhone;
+    const phoneLife = globalThis.GreyhavenPhoneLifeAssets;
+
+    // When the Phone is already open, go straight to Life -> Clock.
+    if (phoneOverlayVisible() && typeof phoneLife?.openLife === 'function') {
+      try {
+        phoneLife.openLife('clock');
+        return;
+      } catch (error) {
+        console.warn('[greyhaven-life-slim] Phone Clock open failed', error);
+      }
+    }
+
+    // The old v1.7.0 tried openLife while the Phone was closed. openLife had
+    // nowhere to render, so the tap appeared to do nothing. Open the Phone first.
+    if (attempt === 0 && typeof phone?.open === 'function') {
+      try {
+        Promise.resolve(phone.open()).catch(error => {
+          console.warn('[greyhaven-life-slim] Phone open failed', error);
+        });
+      } catch (error) {
+        console.warn('[greyhaven-life-slim] Phone open failed', error);
+      }
+    }
+
+    // Give the Phone overlay and Life Assets module time to become available.
+    if (attempt < 18) {
+      setTimeout(() => tryOpen(attempt + 1), 90);
+      return;
+    }
+
+    // Always leave the user with a working control surface.
+    openFallback();
+  };
+
+  tryOpen(0);
 }
 
 function fallbackHtml() {
@@ -465,8 +509,16 @@ function injectStyle() {
 function expose() {
   const api = life();
   if (!api) return false;
+
+  // Keep the old full-panel opener available only as a compatibility escape
+  // hatch, while making the normal GreyhavenLife.open() route use the new Clock.
+  if (!api.openLegacyPanel && typeof api.open === 'function' && api.open !== openClock) {
+    try { api.openLegacyPanel = api.open.bind(api); } catch {}
+  }
+
   Object.assign(api, {
     slimVersion: GH_SLIM_VERSION,
+    open: openClock,
     openSlim: openClock,
     openClock,
     getSlimScheduleProfiles: getScheduleProfiles,
