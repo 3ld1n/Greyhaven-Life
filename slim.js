@@ -6,7 +6,7 @@ import './bridge.js';
  * replacing the location/presence/world-snapshot prompt with a compact schedule-first prompt.
  */
 
-const GH_SLIM_VERSION = '1.7.1';
+const GH_SLIM_VERSION = '1.8.0';
 const SETTINGS_KEY = 'greyhavenLife';
 const META_KEY = 'greyhavenLifeSlim';
 const OLD_META_KEY = 'greyhavenLife';
@@ -38,10 +38,11 @@ const esc = value => norm(value)
 
 function settings() {
   const c = ctx();
-  if (!c?.extensionSettings) return { defaultProfiles: {} };
+  if (!c?.extensionSettings) return { defaultProfiles: {}, globalScheduleProfiles: {} };
   c.extensionSettings[SETTINGS_KEY] ||= {};
   const s = c.extensionSettings[SETTINGS_KEY];
   if (!s.defaultProfiles || typeof s.defaultProfiles !== 'object' || Array.isArray(s.defaultProfiles)) s.defaultProfiles = {};
+  if (!s.globalScheduleProfiles || typeof s.globalScheduleProfiles !== 'object' || Array.isArray(s.globalScheduleProfiles)) s.globalScheduleProfiles = {};
   return s;
 }
 
@@ -55,7 +56,7 @@ function chatState({ create = true } = {}) {
   if (!c?.chatMetadata) return null;
   let s = c.chatMetadata[META_KEY];
   if (!s && create) {
-    s = { version: 1, createdAt: Date.now(), updatedAt: Date.now(), exceptions: {}, migratedLegacyExceptions: false };
+    s = { version: 1, createdAt: Date.now(), updatedAt: Date.now(), exceptions: {}, migratedLegacyExceptions: false, migratedLegacySchedulesToGlobalV1: false };
     c.chatMetadata[META_KEY] = s;
   }
   if (!s || typeof s !== 'object') return null;
@@ -141,32 +142,123 @@ function relevantNames() {
 }
 
 function profileKeyForDescriptor(d) {
-  if (d.source === 'persona') return `persona:${lc(d.sourceKey || d.name)}`;
-  return `char:${d.sourceKey || d.name}`;
-}
-
-function findProfile(name, { create = false } = {}) {
-  const s = settings();
-  const entries = Object.entries(s.defaultProfiles || {});
-  const found = entries.find(([, p]) => lc(p?.name) === lc(name));
-  if (found) return { key: found[0], profile: normalizeProfile(found[1]) };
-  if (!create) return null;
-
-  const d = characterDescriptors().find(x => lc(x.name) === lc(name)) || { name, source: 'character', sourceKey: name, avatar: '' };
-  const key = profileKeyForDescriptor(d);
-  const profile = normalizeProfile({ key, name: d.name, avatar: d.avatar, source: d.source, sourceKey: d.sourceKey, schedule: [] });
-  s.defaultProfiles[key] = profile;
-  saveSettings();
-  return { key, profile };
+  return `name:${lc(d?.name || d?.sourceKey || 'unknown')}`;
 }
 
 function normalizeProfile(profile) {
-  const p = profile && typeof profile === 'object' ? profile : {};
+  const p = profile && typeof profile === 'object' ? { ...profile } : {};
   p.name = norm(p.name || 'Unknown');
+  p.avatar = norm(p.avatar);
+  p.source = norm(p.source || 'character');
+  p.sourceKey = norm(p.sourceKey || p.name);
   p.schedule = Array.isArray(p.schedule) ? p.schedule.map(normalizeSchedule) : [];
+  p.updatedAt = Number.isFinite(Number(p.updatedAt)) ? Number(p.updatedAt) : Date.now();
   return p;
 }
 
+function scheduleFingerprint(entry) {
+  const x = normalizeSchedule(entry);
+  return [lc(x.label), [...x.days].sort((a,b)=>a-b).join(','), x.start, x.end, x.type, lc(x.status)].join('|');
+}
+
+function mergeScheduleRows(target = [], incoming = []) {
+  const rows = Array.isArray(target) ? target.map(normalizeSchedule) : [];
+  const fingerprints = new Set(rows.map(scheduleFingerprint));
+  for (const raw of Array.isArray(incoming) ? incoming : []) {
+    const item = normalizeSchedule(raw);
+    const fp = scheduleFingerprint(item);
+    if (rows.some(x => x.id === item.id) || fingerprints.has(fp)) continue;
+    rows.push(item);
+    fingerprints.add(fp);
+  }
+  return rows;
+}
+
+let scheduleMigrationBusy = false;
+function migrateLegacySchedulesToGlobal() {
+  if (scheduleMigrationBusy) return;
+  scheduleMigrationBusy = true;
+  try {
+    const s = settings();
+    let settingsChanged = false;
+
+    const absorb = (rawProfile, fallbackName = '') => {
+      const p = normalizeProfile({ ...(rawProfile || {}), name: norm(rawProfile?.name || fallbackName) });
+      if (!p.name || !p.schedule.length) return;
+      const key = lc(p.name);
+      const existing = normalizeProfile(s.globalScheduleProfiles[key] || { name:p.name, avatar:p.avatar, source:p.source, sourceKey:p.sourceKey, schedule:[] });
+      const before = existing.schedule.length;
+      existing.name = p.name;
+      existing.avatar ||= p.avatar;
+      existing.source ||= p.source;
+      existing.sourceKey ||= p.sourceKey;
+      existing.schedule = mergeScheduleRows(existing.schedule, p.schedule);
+      if (existing.schedule.length !== before || !s.globalScheduleProfiles[key]) {
+        existing.updatedAt = Date.now();
+        s.globalScheduleProfiles[key] = existing;
+        settingsChanged = true;
+      }
+    };
+
+    // One-time migration from the former Character Management "Life Defaults".
+    if (!s.globalScheduleDefaultsMigratedV1) {
+      for (const p of Object.values(s.defaultProfiles || {})) absorb(p);
+      s.globalScheduleDefaultsMigratedV1 = true;
+      settingsChanged = true;
+    }
+
+    // Gradually rescue old chat-local schedules. Each legacy chat is imported
+    // once when it is opened, so old schedules are not lost but deleted global
+    // schedules are never re-created from the same chat later.
+    const c = ctx();
+    let slim = c?.chatMetadata?.[META_KEY];
+    if (!slim && c?.chatMetadata) {
+      slim = { version:1, createdAt:Date.now(), updatedAt:Date.now(), exceptions:{}, migratedLegacyExceptions:false, migratedLegacySchedulesToGlobalV1:false };
+      c.chatMetadata[META_KEY] = slim;
+    }
+    const old = c?.chatMetadata?.[OLD_META_KEY];
+    if (slim && !slim.migratedLegacySchedulesToGlobalV1) {
+      if (old?.people && typeof old.people === 'object') {
+        for (const person of Object.values(old.people)) {
+          const name = norm(person?.name);
+          if (!name || !Array.isArray(person?.schedule) || !person.schedule.length) continue;
+          absorb({ name, avatar:person?.avatar || '', source:person?.source || 'character', sourceKey:person?.sourceKey || name, schedule:person.schedule });
+        }
+      }
+      slim.migratedLegacySchedulesToGlobalV1 = true;
+      slim.updatedAt = Date.now();
+      try {
+        c.chatMetadata[META_KEY] = slim;
+        c.updateChatMetadata?.({ [META_KEY]: slim });
+        if (typeof c.saveMetadataDebounced === 'function') c.saveMetadataDebounced();
+      } catch {}
+    }
+
+    if (settingsChanged) saveSettings();
+  } finally {
+    scheduleMigrationBusy = false;
+  }
+}
+
+function findProfile(name, { create = false } = {}) {
+  name = norm(name);
+  if (!name) return null;
+  migrateLegacySchedulesToGlobal();
+  const s = settings();
+  const key = lc(name);
+  if (s.globalScheduleProfiles[key]) {
+    const profile = normalizeProfile(s.globalScheduleProfiles[key]);
+    s.globalScheduleProfiles[key] = profile;
+    return { key, profile };
+  }
+  if (!create) return null;
+
+  const d = characterDescriptors().find(x => lc(x.name) === key) || { name, source:'character', sourceKey:name, avatar:'' };
+  const profile = normalizeProfile({ name:d.name, avatar:d.avatar, source:d.source, sourceKey:d.sourceKey, schedule:[] });
+  s.globalScheduleProfiles[key] = profile;
+  saveSettings();
+  return { key, profile };
+}
 function normalizeSchedule(entry) {
   const x = entry && typeof entry === 'object' ? { ...entry } : {};
   x.id = norm(x.id) || uid('schedule');
@@ -336,29 +428,33 @@ function updatePrompt() {
 }
 
 function getScheduleProfiles() {
+  migrateLegacySchedulesToGlobal();
+  const s = settings();
   const map = new Map();
   for (const d of characterDescriptors()) map.set(lc(d.name), { ...d, schedule: [] });
-  for (const p of Object.values(settings().defaultProfiles || {})) {
+  for (const p of Object.values(s.globalScheduleProfiles || {})) {
     const profile = normalizeProfile(p);
     const key = lc(profile.name);
     if (!key) continue;
-    const base = map.get(key) || { name: profile.name, avatar: profile.avatar || '', source: profile.source || 'character', sourceKey: profile.sourceKey || '' };
-    map.set(key, { ...base, schedule: clone(profile.schedule) });
+    const base = map.get(key) || { name:profile.name, avatar:profile.avatar || '', source:profile.source || 'character', sourceKey:profile.sourceKey || '' };
+    map.set(key, { ...base, schedule:clone(profile.schedule), updatedAt:profile.updatedAt });
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function saveSchedule(name, data = {}) {
   const found = findProfile(name, { create: true });
+  if (!found) return null;
   const p = found.profile;
   const item = normalizeSchedule(data);
   const index = p.schedule.findIndex(x => x.id === item.id);
   if (index >= 0) p.schedule[index] = item;
   else p.schedule.push(item);
   p.updatedAt = Date.now();
-  settings().defaultProfiles[found.key] = p;
+  settings().globalScheduleProfiles[found.key] = p;
   saveSettings();
   updatePrompt();
+  try { window.dispatchEvent(new CustomEvent('greyhaven-life-global-schedules:changed', { detail:{ name:p.name, action:index >= 0 ? 'update' : 'add' } })); } catch {}
   return clone(item);
 }
 
@@ -367,12 +463,38 @@ function deleteSchedule(name, id) {
   if (!found) return false;
   const before = found.profile.schedule.length;
   found.profile.schedule = found.profile.schedule.filter(x => x.id !== id);
-  settings().defaultProfiles[found.key] = found.profile;
+  found.profile.updatedAt = Date.now();
+  settings().globalScheduleProfiles[found.key] = found.profile;
   saveSettings();
   updatePrompt();
-  return found.profile.schedule.length < before;
+  const deleted = found.profile.schedule.length < before;
+  if (deleted) try { window.dispatchEvent(new CustomEvent('greyhaven-life-global-schedules:changed', { detail:{ name:found.profile.name, action:'delete' } })); } catch {}
+  return deleted;
 }
 
+function upcomingSchedules(name, at = nowDate(), horizonHours = 18) {
+  const found = findProfile(name, { create:false });
+  if (!found) return [];
+  return found.profile.schedule
+    .map(x => nextOccurrence(x, at, horizonHours))
+    .filter(Boolean)
+    .sort((a,b) => a.start - b.start);
+}
+
+function clockState() {
+  try {
+    const state = life()?.getState?.();
+    const time = state?.time || {};
+    return {
+      mode: ['real','offset','manual'].includes(time.mode) ? time.mode : 'real',
+      manualRunning: time.manualRunning !== false,
+      offsetMinutes: Number(time.offsetMinutes || 0),
+      now: nowDate().toISOString(),
+    };
+  } catch {
+    return { mode:'real', manualRunning:true, offsetMinutes:0, now:nowDate().toISOString() };
+  }
+}
 function saveException(name, data = {}) {
   name = norm(name);
   if (!name) return null;
@@ -493,6 +615,7 @@ function injectStyle() {
   style.id = 'gh-life-slim-style';
   style.textContent = `
 #gh-life-hud .gh-life-hud-scene{display:none!important}
+#gh-life-character-defaults-button,#gh-life-default-profile-dialog,#gh-life-default-schedule-dialog{display:none!important}
 #gh-life-slim-fallback{border:0;background:transparent;padding:0;color:#fff;max-width:min(92vw,440px);width:100%}
 #gh-life-slim-fallback::backdrop{background:rgba(0,0,0,.7);backdrop-filter:blur(8px)}
 .gh-life-slim-card{background:#15171c;border:1px solid rgba(255,255,255,.1);border-radius:24px;overflow:hidden;box-shadow:0 22px 70px rgba(0,0,0,.5)}
@@ -529,8 +652,18 @@ function expose() {
     deleteSlimException: deleteException,
     getSlimCurrentSchedule: name => clone(activeSchedule(name, nowDate())),
     getSlimUpcomingSchedule: (name, hours = 6) => clone(upcomingSchedule(name, nowDate(), hours)),
+    getSlimUpcomingSchedules: (name, hours = 18) => clone(upcomingSchedules(name, nowDate(), hours)),
     getSlimActiveException: name => clone(activeException(name, nowDate())),
+    getSlimClockState: clockState,
     getSlimPromptSummary: buildPrompt,
+
+    // Compatibility: all callers now see the same global schedule registry.
+    getCurrentSchedule: name => clone(activeSchedule(name, nowDate())),
+    getUpcomingSchedules: (name, hours = 18) => clone(upcomingSchedules(name, nowDate(), hours)),
+    getDefaultProfile: ref => {
+      const name = typeof ref === 'string' ? ref : norm(ref?.name);
+      return clone(findProfile(name, { create:false })?.profile || null);
+    },
   });
   return true;
 }
@@ -540,7 +673,7 @@ function bindEvents() {
   if (!c?.eventSource || !c?.eventTypes) return;
   const bind = (key, fn) => { const e = c.eventTypes[key]; if (e) c.eventSource.on(e, fn); };
   for (const key of ['GENERATION_STARTED','CHAT_CHANGED','CHAT_CREATED','PERSONA_CHANGED','GROUP_UPDATED','CHARACTER_EDITED']) {
-    bind(key, () => setTimeout(() => { expose(); updatePrompt(); }, key === 'GENERATION_STARTED' ? 0 : 40));
+    bind(key, () => setTimeout(() => { if (key !== 'GENERATION_STARTED') { chatState(); migrateLegacySchedulesToGlobal(); } expose(); updatePrompt(); }, key === 'GENERATION_STARTED' ? 0 : 40));
   }
   window.addEventListener('greyhaven-life:tick', updatePrompt);
   window.addEventListener('greyhaven-life:changed', updatePrompt);
@@ -559,6 +692,7 @@ async function init() {
   injectStyle();
   enforceSlimSettings();
   chatState();
+  migrateLegacySchedulesToGlobal();
   expose();
   interceptLegacyOpeners();
   bindEvents();

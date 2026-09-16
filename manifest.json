@@ -4,7 +4,7 @@
   "js": "slim.js",
   "css": "style.css",
   "author": "Eldin + ChatGPT",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "auto_update": false,
   "minimum_client_version": "1.13.3"
 }
