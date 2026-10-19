@@ -6,7 +6,7 @@ import './bridge.js';
  * replacing the location/presence/world-snapshot prompt with a compact schedule-first prompt.
  */
 
-const GH_SLIM_VERSION = '1.8.0';
+const GH_SLIM_VERSION = '1.9.0';
 const SETTINGS_KEY = 'greyhavenLife';
 const META_KEY = 'greyhavenLifeSlim';
 const OLD_META_KEY = 'greyhavenLife';
@@ -371,6 +371,15 @@ function buildPrompt() {
     `Current fictional time: ${formatClock(now)}. This clock is authoritative unless the newest roleplay explicitly changes time.`,
   ];
 
+  const lastTurnMs = Number(chatState({ create:false })?.lastGenerationRoleplayMs || 0);
+  const elapsedMinutes = lastTurnMs ? Math.round((now.getTime() - lastTurnMs) / 60000) : 0;
+  if (elapsedMinutes >= 30) {
+    const interval = elapsedMinutes >= 120 ? `${Math.floor(elapsedMinutes / 60)}h ${elapsedMinutes % 60}m` : `${elapsedMinutes} minutes`;
+    lines.push(`IMPORTANT TIME PASSAGE: ${interval} of fictional time have passed since the last AI turn. Reflect that substantial passage naturally where relevant: changed daylight, plausible routines, pending messages/plans and reactions. Do not speak as though it is still the former time. Do not invent completed meetings, journeys, intimacies, or off-screen character decisions that were never played out.`);
+  } else if (elapsedMinutes <= -30) {
+    lines.push('RP CLOCK WAS MOVED BACKWARD. Use the current authoritative time; do not assume later events already happened in this revised scene.');
+  }
+
   for (const name of names) {
     const ex = activeException(name, now);
     if (ex?.suppressObligations) {
@@ -488,11 +497,12 @@ function clockState() {
     return {
       mode: ['real','offset','manual'].includes(time.mode) ? time.mode : 'real',
       manualRunning: time.manualRunning !== false,
+      manualRateDivisor: [1,5,10].includes(Number(time.manualRateDivisor)) ? Number(time.manualRateDivisor) : 1,
       offsetMinutes: Number(time.offsetMinutes || 0),
       now: nowDate().toISOString(),
     };
   } catch {
-    return { mode:'real', manualRunning:true, offsetMinutes:0, now:nowDate().toISOString() };
+    return { mode:'real', manualRunning:true, manualRateDivisor:1, offsetMinutes:0, now:nowDate().toISOString() };
   }
 }
 function saveException(name, data = {}) {
@@ -673,7 +683,17 @@ function bindEvents() {
   if (!c?.eventSource || !c?.eventTypes) return;
   const bind = (key, fn) => { const e = c.eventTypes[key]; if (e) c.eventSource.on(e, fn); };
   for (const key of ['GENERATION_STARTED','CHAT_CHANGED','CHAT_CREATED','PERSONA_CHANGED','GROUP_UPDATED','CHARACTER_EDITED']) {
-    bind(key, () => setTimeout(() => { if (key !== 'GENERATION_STARTED') { chatState(); migrateLegacySchedulesToGlobal(); } expose(); updatePrompt(); }, key === 'GENERATION_STARTED' ? 0 : 40));
+    bind(key, () => setTimeout(() => {
+      if (key !== 'GENERATION_STARTED') { chatState(); migrateLegacySchedulesToGlobal(); }
+      expose(); updatePrompt();
+      if (key === 'GENERATION_STARTED') {
+        const state = chatState();
+        if (state) {
+          state.lastGenerationRoleplayMs = nowDate().getTime();
+          persistChatState(state, 'generation-clock-anchor');
+        }
+      }
+    }, key === 'GENERATION_STARTED' ? 0 : 40));
   }
   window.addEventListener('greyhaven-life:tick', updatePrompt);
   window.addEventListener('greyhaven-life:changed', updatePrompt);

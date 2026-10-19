@@ -1,5 +1,7 @@
+import { safeManualRate, manualRoleplayTimeMs, reanchorManualRate } from './clock-rate.mjs';
+
 const GH_MODULE = 'greyhaven-life';
-const GH_VERSION = '1.3.1';
+const GH_VERSION = '1.9.0';
 const GH_META_KEY = 'greyhavenLife';
 const GH_PROMPT_KEY = 'greyhaven_life_state';
 const GH_SETTINGS_KEY = 'greyhavenLife';
@@ -155,6 +157,8 @@ function ghDefaultState() {
             manualEpochMs: Date.now(),
             manualAnchorRealMs: Date.now(),
             manualRunning: true,
+            // Real milliseconds per fictional millisecond (1, 5 or 10).
+            manualRateDivisor: 1,
         },
         scene: {
             label: '',
@@ -262,6 +266,7 @@ function ghNormalizeState(raw) {
     state.time.manualEpochMs = Number.isFinite(Number(state.time.manualEpochMs)) ? Number(state.time.manualEpochMs) : Date.now();
     state.time.manualAnchorRealMs = Number.isFinite(Number(state.time.manualAnchorRealMs)) ? Number(state.time.manualAnchorRealMs) : Date.now();
     state.time.manualRunning = state.time.manualRunning !== false;
+    state.time.manualRateDivisor = safeManualRate(state.time.manualRateDivisor);
 
     state.scene ||= {};
     state.scene.label ||= '';
@@ -379,8 +384,7 @@ function ghGetCurrentTime(state = ghGetState()) {
     }
 
     if (time.mode === 'manual') {
-        const elapsed = time.manualRunning ? Math.max(0, now - Number(time.manualAnchorRealMs || now)) : 0;
-        return new Date(Number(time.manualEpochMs || now) + elapsed);
+        return new Date(manualRoleplayTimeMs(time, now));
     }
 
     return new Date(now);
@@ -428,6 +432,15 @@ function ghSetManualRunning(running) {
             state.time.manualAnchorRealMs = Date.now();
         }
         state.time.manualRunning = !!running;
+    }, 'time');
+}
+
+function ghSetManualRateDivisor(divisor) {
+    const value = Number(divisor);
+    if (![1, 5, 10].includes(value)) return;
+    ghMutate(state => {
+        // Reanchor before changing speed, so the displayed fictional time never jumps.
+        Object.assign(state.time, reanchorManualRate(state.time, value));
     }, 'time');
 }
 
@@ -536,7 +549,7 @@ function ghTimeModeLabel(state) {
         return `Real ${sign}${h ? `${h}h` : ''}${m ? `${m}m` : h ? '' : '0m'}`;
     }
     if (state.time.mode === 'manual') {
-        return state.time.manualRunning ? 'Manual · running' : 'Manual · frozen';
+        return state.time.manualRunning ? (Number(state.time.manualRateDivisor || 1) === 1 ? 'Manual · running normally' : `Manual · ${state.time.manualRateDivisor}× slower`) : 'Manual · frozen';
     }
     return 'Real time';
 }
@@ -3591,6 +3604,17 @@ function ghRenderTimeTab() {
                 </label>
             </div>
 
+            <div class="gh-life-form-grid">
+                <label class="gh-life-span-2">
+                    <span>Clock speed while running</span>
+                    <select id="gh-life-manual-speed" data-gh-manual-speed>
+                        <option value="1" ${state.time.manualRateDivisor === 1 ? 'selected' : ''}>Normal · 1 RP minute per 1 real minute</option>
+                        <option value="5" ${state.time.manualRateDivisor === 5 ? 'selected' : ''}>Slow · 1 RP minute per 5 real minutes</option>
+                        <option value="10" ${state.time.manualRateDivisor === 10 ? 'selected' : ''}>Very slow · 1 RP minute per 10 real minutes</option>
+                    </select>
+                </label>
+            </div>
+
             <div class="gh-life-action-row">
                 <button type="button" class="gh-life-primary" data-gh-save-manual>Set manual time</button>
                 <button type="button" data-gh-use-last-message>Use latest message's real timestamp</button>
@@ -4711,6 +4735,7 @@ function ghHandleMainDialogClick(event) {
         }
 
         ghSetManualTime(date, { running });
+        ghSetManualRateDivisor(Number(document.querySelector('#gh-life-manual-speed')?.value || 1));
         return;
     }
 
@@ -5154,6 +5179,7 @@ function ghExposeApi() {
         setRealTime: ghSetRealTime,
         setOffsetMinutes: ghSetOffset,
         setManualTime: (value, running = true) => ghSetManualTime(new Date(value), { running }),
+        setManualRateDivisor: ghSetManualRateDivisor,
         shiftMinutes: ghShiftTime,
         subscribe: ghSubscribe,
 

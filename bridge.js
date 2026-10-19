@@ -645,11 +645,14 @@ function buildWorldPrompt() {
     // older facts (plans/blocking/calls) retained when they are still useful.
     const phoneHasDedicatedPrompt = !!globalThis.GreyhavenPhone;
     const promptEligible = root.events.filter(e => {
-        if (!phoneHasDedicatedPrompt) return true;
-        // Greyhaven Phone v1.2.2+ already injects chronological private
-        // message/call continuity. Do not pay for the same facts twice.
-        if (['messages','phone'].includes(norm(e?.app)) &&
-            !['contact.block','contact.unblock'].includes(norm(e?.type))) return false;
+        const type = norm(e?.type), app = norm(e?.app);
+        // A world-wide prompt is visible to all group speakers. Keep private
+        // conversations out entirely rather than relying on a textual privacy
+        // rule that the model could accidentally disobey.
+        if (/^(?:message\.|media\.send|call\.|contact\.block|contact\.unblock|instagram\.dm|snapchat\.snap|facebook\.messenger|onlyfans\.dm|darkweb\.dm)/.test(type)) return false;
+        if (type === 'social.activity' && norm(e?.source) === 'greyhaven-phone') return false;
+        if (['messages','phone'].includes(app)) return false;
+        if (phoneHasDedicatedPrompt && /(?:\.dm$|private|message\.activity)/.test(type)) return false;
         return true;
     });
     const newest = promptEligible.slice(-28);
